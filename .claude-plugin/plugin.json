@@ -1,0 +1,7 @@
+{
+  "name": "cctree",
+  "displayName": "ccTree",
+  "version": "0.1.0",
+  "description": "Git-style graph view of the current conversation tree, including branches the TUI has stopped showing you.",
+  "keywords": ["transcript", "graph", "branch", "rewind"]
+}

@@ -1,0 +1,39 @@
+#!/bin/sh
+# cctree-go — browse the conversation graph, then jump into a session.
+#
+# `cctree tui` cannot turn itself into `claude`: a process can exec, but the TUI
+# still has a screen to tear down and an id to report, and stdout is the screen —
+# a caller capturing it would get the whole ANSI frame. So the TUI writes the
+# chosen session id to a file and this wrapper does the exec.
+#
+# Being a script rather than a shell function matters: it lands on PATH with the
+# plugin, so there is nothing to source and nothing to keep in sync with a rc
+# file. Exec replaces this process, so you end up in `claude` with no stray shell
+# left behind.
+#
+#   cctree-go              # browse this project, b to branch, o to open
+#   cctree-go --all        # every session in the project, merged
+#
+# Any flags are passed through to `cctree tui`.
+
+set -e
+
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+EMIT=$(mktemp "${TMPDIR:-/tmp}/cctree-go.XXXXXX") || exit 1
+# Do not leave the temp file behind if the TUI is killed.
+trap 'rm -f "$EMIT"' EXIT INT TERM HUP
+
+# The TUI owns the terminal here; it exits non-zero only on a real error, and
+# quitting with `q` simply leaves the file empty.
+"$DIR/cctree" tui --emit "$EMIT" "$@" || exit $?
+
+ID=$(cat "$EMIT" 2>/dev/null || true)
+rm -f "$EMIT"
+trap - EXIT INT TERM HUP
+
+# Nothing chosen (quit with q) is the normal path, not a failure.
+[ -n "$ID" ] || exit 0
+
+printf 'resuming %s\n' "$ID"
+exec claude -r "$ID"

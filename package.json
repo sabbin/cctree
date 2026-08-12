@@ -1,0 +1,13 @@
+{
+  "name": "cctree",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A git-style graph view of Claude Code conversations",
+  "bin": { "cctree": "./bin/cctree" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node test/make-fixtures.js && node --test test/*.test.js",
+    "show": "./bin/cctree show"
+  }
+}

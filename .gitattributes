@@ -1,0 +1,4 @@
+# `bin/` lands on the Bash tool's PATH, and a CRLF in a shebang makes the
+# wrapper fail with a confusing "bad interpreter". core.autocrlf is true on
+# this machine, so pin the whole repo to LF rather than rely on local config.
+* text=auto eol=lf

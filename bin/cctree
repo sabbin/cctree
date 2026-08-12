@@ -1,0 +1,4 @@
+#!/bin/sh
+# Thin wrapper so this works whatever Node decides about extensionless ESM files.
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$DIR/cctree.mjs" "$@"

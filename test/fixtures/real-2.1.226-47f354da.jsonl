@@ -1,0 +1,17 @@
+{"uuid":null,"parentUuid":null,"type":"mode","timestamp":null,"isSidechain":false}
+{"uuid":null,"parentUuid":null,"type":"permission-mode","timestamp":null,"isSidechain":false}
+{"uuid":null,"parentUuid":null,"type":"file-history-snapshot","timestamp":null,"isSidechain":false}
+{"uuid":"8825e20a-5c71-4557-a1a5-fedf9ef61a1c","parentUuid":null,"type":"user","timestamp":"2026-08-08T08:51:31.900Z","isSidechain":false,"promptSource":"typed","origin":{"kind":"human"},"message":{"role":"user","content":"text-3"}}
+{"uuid":"897dd763-b58e-4c82-930d-84ba0980ad5a","parentUuid":"8825e20a-5c71-4557-a1a5-fedf9ef61a1c","type":"attachment","timestamp":"2026-08-08T08:51:31.899Z","isSidechain":false,"attachment":{"type":"deferred_tools_delta"}}
+{"uuid":"3f6e2580-1d04-4330-be3c-2b04c936d4f6","parentUuid":"897dd763-b58e-4c82-930d-84ba0980ad5a","type":"attachment","timestamp":"2026-08-08T08:51:31.899Z","isSidechain":false,"attachment":{"type":"agent_listing_delta"}}
+{"uuid":"57764361-2f52-4afe-b876-e40492c616c5","parentUuid":"3f6e2580-1d04-4330-be3c-2b04c936d4f6","type":"attachment","timestamp":"2026-08-08T08:51:31.899Z","isSidechain":false,"attachment":{"type":"skill_listing"}}
+{"uuid":null,"parentUuid":null,"type":"ai-title","timestamp":null,"isSidechain":false}
+{"uuid":null,"parentUuid":null,"type":"file-history-snapshot","timestamp":null,"isSidechain":false}
+{"uuid":"fbfc11ac-0845-4ccf-9073-fbd0a10d4e70","parentUuid":null,"type":"user","timestamp":"2026-08-08T08:51:40.397Z","isSidechain":false,"isMeta":true,"message":{"role":"user","content":"<local-command-caveat>redacted</local-command-caveat>"}}
+{"uuid":"30d58f5a-3054-4e98-8091-8e0821b3c556","parentUuid":"fbfc11ac-0845-4ccf-9073-fbd0a10d4e70","type":"user","timestamp":"2026-08-08T08:51:40.396Z","isSidechain":false,"message":{"role":"user","content":"<command-name>redacted</command-name>\n<command-message>redacted</command-message>\n<command-args>redacted</command-args>"}}
+{"uuid":"ec8b266a-631d-45bc-bff5-7af2b868b3fa","parentUuid":"30d58f5a-3054-4e98-8091-8e0821b3c556","type":"user","timestamp":"2026-08-08T08:51:40.396Z","isSidechain":false,"message":{"role":"user","content":"<local-command-stdout>redacted</local-command-stdout>"}}
+{"uuid":null,"parentUuid":null,"type":"last-prompt","timestamp":null,"isSidechain":false,"leafUuid":"ec8b266a-631d-45bc-bff5-7af2b868b3fa"}
+{"uuid":null,"parentUuid":null,"type":"file-history-snapshot","timestamp":null,"isSidechain":false}
+{"uuid":"77451010-2880-4086-ae5d-d75baddec025","parentUuid":"ec8b266a-631d-45bc-bff5-7af2b868b3fa","type":"assistant","timestamp":"2026-08-08T11:10:03.687Z","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"text-14"}]}}
+{"uuid":null,"parentUuid":null,"type":"last-prompt","timestamp":null,"isSidechain":false,"leafUuid":"77451010-2880-4086-ae5d-d75baddec025"}
+{"uuid":null,"parentUuid":null,"type":"file-history-snapshot","timestamp":null,"isSidechain":false}
