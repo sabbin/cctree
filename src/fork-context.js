@@ -101,3 +101,104 @@ export function inheritedFor(file, records, deps = {}) {
 
   return { records: inherited, parentFile: parent.path, parentId: parent.id, cutoff, inferred: true };
 }
+
+
+/**
+ * Where an unused `/fork` belongs in a MERGED tree.
+ *
+ * `inheritedFor()` above answers the single-file question — "open this empty
+ * fork, show me what it starts from" — by borrowing the parent's records. That
+ * is the wrong answer when the parent is already on screen: its records are
+ * there, and what is missing is the fork itself, which has none. A family view
+ * that silently omits the fork is drawing a tree with a limb sawn off.
+ *
+ * So the fork gets one synthetic record, and the graph does the rest — lanes, a
+ * connector, a tip. The record is marked `inferred` and rendered as such: it is
+ * evidence of a file's existence and creation time, not of anything anybody said.
+ *
+ * The inference is smaller than `inheritedFor()`'s. Which parent comes from the
+ * same title match, but the cut point only has to name ONE record — the parent's
+ * last at or before the fork's creation — rather than slicing a whole history.
+ *
+ * @param {string[]} files every transcript in the view
+ * @param {object[]} records their parsed records, each carrying `.file`
+ * @returns {object[]} zero or more synthetic records, safe to concat and rebuild
+ */
+export function forkStubs(files, records, deps = {}) {
+  const { birth = birthOf } = deps;
+  // A single file is `inheritedFor()`'s job: with no parent on screen there is
+  // nothing to attach to, and borrowing the history is the better answer.
+  if (!files || files.length < 2) return [];
+
+  const byFile = new Map(files.map((f) => [f, []]));
+  for (const r of records) byFile.get(r.file)?.push(r);
+
+  const forks = [];
+  const hosts = [];
+  for (const file of files) {
+    const rs = byFile.get(file) ?? [];
+    if (!rs.length) continue;
+    const born = birth(file);
+    const title = aiTitleOf(rs);
+    // Anything with a record of its own is a possible parent, never a stub: an
+    // inference must not stand in front of real data, which is the same guard
+    // `inheritedFor()` opens with.
+    if (rs.some((r) => r.uuid)) {
+      hosts.push({ file, rs, born, base: title ? title.replace(FORK_SUFFIX, '').trim() : null });
+      continue;
+    }
+    if (!born || !title || !FORK_SUFFIX.test(title)) continue;
+    const base = title.replace(FORK_SUFFIX, '').trim();
+    if (base) forks.push({ file, born, base, sessionId: rs.find((r) => r.sessionId)?.sessionId ?? null });
+  }
+
+  const stubs = [];
+  for (const fork of forks) {
+    // Nearest older session whose own title matches — the same tie-break the
+    // picker nests by. A `/branch` copy cannot win this: `/branch` writes a
+    // `custom-title` and does NOT copy the parent's `ai-title`, so a branch has
+    // no `base` at all and only the true parent can match.
+    let parent = null;
+    for (const h of hosts) {
+      if (!h.born || h.born >= fork.born || h.base !== fork.base) continue;
+      if (!parent || h.born > parent.born) parent = h;
+    }
+    if (!parent) continue;
+
+    // Records the parent wrote after the fork was created are its own
+    // continuation — `/fork` does not move the conversation — so the attachment
+    // is its last record at or before that moment.
+    let attach = null;
+    for (const r of parent.rs) {
+      if (!r.uuid || !r.timestamp || r.timestamp > fork.born) continue;
+      if (!attach || r.timestamp > attach.timestamp) attach = r;
+    }
+    if (!attach) continue;
+
+    stubs.push({
+      uuid: `fork:${fork.sessionId ?? fork.file}`,
+      parentUuid: attach.uuid,
+      type: 'fork',
+      kind: 'fork',
+      subkind: null,
+      timestamp: fork.born,
+      sessionId: fork.sessionId,
+      cwd: null,
+      gitBranch: null,
+      version: null,
+      isSidechain: false,
+      leafUuid: null,
+      requestId: null,
+      toolUseIds: null,
+      toolResultFor: null,
+      checkpoint: null,
+      preview: 'no prompt yet',
+      file: fork.file,
+      line: 0,
+      // Never a real record, and everything downstream may rely on knowing it.
+      inferred: true,
+      raw: null,
+    });
+  }
+  return stubs;
+}

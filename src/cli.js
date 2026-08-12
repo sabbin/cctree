@@ -4,19 +4,20 @@ import { dirname, join } from 'node:path';
 import { parseTranscript, stats, PLUMBING_TAGS, stripPlumbing } from './parse.js';
 import { planBranch, buildBranchText } from './branch.js';
 import { readAliases, setAlias, STORE_FILE } from './store.js';
-import { buildGraph, annotate, collapse, looksForked } from './graph.js';
+import { buildGraph, annotate, collapse, looksForked, headOf } from './graph.js';
 import { assignLanes } from './lanes.js';
 import { renderAscii, renderHeader } from './render-ascii.js';
+import { colorDepth, makePalette } from './palette.js';
 import { runTui } from './tui.js';
 import { projectDir, listSessions, listSubagents, resolveSession } from './sessions.js';
-import { inheritedFor } from './fork-context.js';
+import { inheritedFor, forkStubs } from './fork-context.js';
 
 const USAGE = `cctree — a git-style graph over Claude Code transcripts
 
   cctree show [session] [--all] [--raw] [--no-color] [--issues]
       Render the conversation tree. Default session is the most recently
       touched one for the current directory. --all merges every session in
-      the project so /branch forks appear as one tree.
+      the project so /branch copies appear as one tree.
 
   cctree sessions
       List transcripts for the current directory.
@@ -28,7 +29,7 @@ const USAGE = `cctree — a git-style graph over Claude Code transcripts
   cctree fixture <session> [--out FILE]
       Emit a redacted skeleton (structure only, no content) for test/fixtures.
 
-  cctree tui [session] [--all] [--raw] [--once] [--select N|uuid]
+  cctree tui [session] [--all] [--raw] [--once] [--select N|uuid] [--pane]
       Opens on the list of conversations in this directory; enter opens one as a
       tree, esc goes back, a merges them all. In a tree: arrows/jk move, enter
       toggles detail, b branches at the selected prompt, o resumes, r refreshes,
@@ -77,13 +78,13 @@ function loadFiles(files, { raw = false } = {}) {
     issues.push(...p.issues);
   }
   // An unused `/fork` has no records of its own; borrow the parent's, tagged.
-  // Only ever for a single file: in a merged view the parent is already there.
+  // Only ever for a single file: in a merged view the parent is already there —
+  // and there, the fork gets a placed stub instead so it still has a limb.
   const inherited = files.length === 1 ? inheritedFor(files[0], records) : null;
   if (inherited) records = inherited.records;
+  else records = records.concat(forkStubs(files, records));
 
-  // HEAD is the last record appended to the newest file.
-  const last = records.filter((r) => r.file === files[files.length - 1]).at(-1);
-  const graph = annotate(buildGraph(records), { headUuid: last?.uuid || null });
+  const graph = annotate(buildGraph(records), { headUuid: headOf(records) });
   collapse(graph, { enabled: !raw });
   annotate(graph, { headUuid: graph.head });
   if (inherited) {
@@ -163,8 +164,8 @@ function cmdTui(positional, flags) {
     }
     const inherited = list.length === 1 ? inheritedFor(list[0], records) : null;
     if (inherited) records = inherited.records;
-    const last = records.filter((r) => r.file === list[list.length - 1]).at(-1);
-    const graph = annotate(buildGraph(records), { headUuid: last?.uuid || null });
+    else records = records.concat(forkStubs(list, records));
+    const graph = annotate(buildGraph(records), { headUuid: headOf(records) });
     collapse(graph, { enabled: !flags.raw });
     annotate(graph, { headUuid: graph.head });
     if (inherited) {
@@ -180,6 +181,9 @@ function cmdTui(positional, flags) {
       select: flags.select ?? null,
       emit: typeof flags.emit === 'string' ? flags.emit : null,
       view,
+      // Detail docked right rather than a line under the keybar. Needs 120
+      // columns; refused below that, never squeezed.
+      pane: !!flags.pane,
       files,
       allFiles,
     });
@@ -192,11 +196,16 @@ function cmdShow(positional, flags) {
   const { files, title } = resolveFiles(positional, flags);
   const { graph, issues } = loadFiles(files, { raw: !!flags.raw });
   const lanes = assignLanes(graph);
-  const color = flags.color !== false && flags.noColor !== true && process.stdout.isTTY;
+  // Colour depth is decided here, at the I/O boundary, and handed to the
+  // renderer as data — asking the terminal anything inside a renderer is what
+  // would stop it being pure. `--no-color` is the explicit override; everything
+  // else (NO_COLOR, a pipe, COLORTERM, TERM) `colorDepth` already knows about.
+  const forced = flags.color === false || flags.noColor === true;
+  const palette = makePalette(forced ? 0 : colorDepth());
 
   console.log(renderHeader(graph, lanes, { file: title }));
   console.log('');
-  console.log(renderAscii(graph, lanes, { color }));
+  console.log(renderAscii(graph, lanes, { palette }));
 
   const forkWarn = flags.all ? looksForked(graph) : [];
   if (forkWarn.length > 1) {

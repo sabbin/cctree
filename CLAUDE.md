@@ -125,8 +125,36 @@ so a naive allocator recycles the trunk column and a fork renders as a straight
 line. A column stays reserved until every child of the fork it holds has been
 emitted. This is the one non-obvious thing in `lanes.js`.
 
-**Fork rows name their prompt.** Chronological layout means a connector meets a
-column, not the fork row. Each `├─┐` carries `forked after #N`.
+**Rows are depth-first, not chronological.** Chronology holds WITHIN a lane;
+between lanes, structure wins. The original layout ordered rows by timestamp, so
+an arm's first node landed wherever its clock said and its connector met a
+COLUMN rather than the row it left — a `/branch` made an hour after its sibling
+elbowed off whatever happened to occupy that column at the time. Worse, a branch
+of a branch was pushed below arms it has nothing to do with, purely because it
+was written later. Measured on a four-session family: `M/N/O`, branched from
+`D`, rendered ten rows below `Z`, which is a sibling of `D`'s whole arm.
+
+Depth-first fixes it: each arm is drawn whole before the next begins, so an
+arm's first node sits directly under its parent and the elbow lands where the
+split is. The TRUNK child is drawn last, so the trunk column runs unbroken down
+the left and ends at the bottom.
+
+Costs, both real: rows are no longer a timeline, and `#N` counts down the tree
+rather than through the clock. Measured against every fixture, the node sequence
+is byte-identical for a single transcript — ties inside one file break to the
+latest arm, which is what chronological order already produced — so the change
+only ever moves rows in a merged view, which is the only place it was wrong.
+
+**Split rows name their prompt**, on their own row, and the trunk arm gets one
+too: it is drawn last, after every sibling's subtree, so its parent is always far
+up the screen. It says `#N continues`, never `split` — calling it a split makes
+the original a branch of its own copy.
+
+The word is load-bearing. A rewind, a `/branch` and a `/fork` all put two
+children on one node, and the graph cannot tell which did it — so the display
+says `split`, never `fork`, and `⑂` is reserved for a real `/fork` session.
+`graph.splits` is the field. Calling these forks was the original sin here, and
+putting U+2442 on them made it a lie with a glyph attached.
 
 **The TUI opens on a forest of conversations, not a merged tree.** A merged tree
 stops being readable at a handful of branches — this project hit 32 nodes across
@@ -135,6 +163,64 @@ their branches, so the relationship is shown rather than described. Rows carry
 the LAST prompt: every branch of one conversation shares an opening prompt, so
 showing that makes every row identical. `--all`, a named session or `--select`
 skip the picker for callers that already know what they want.
+
+**Two views, one row model, and a pane that is refused rather than squeezed.**
+The picker lists conversations; `enter` opens one as a tree; `esc` goes back.
+Both are `{text, id|uuid}` rows, so selection and scrolling are written once.
+
+`tab` docks a pane on the right — node fields in the tree, the selected
+conversation's timeline in the picker, the latter drawn by `renderAsciiRows` at
+the pane's width so the printed view, the tree view and the pane cannot drift.
+The two views split the screen differently on purpose: a field list wants a
+narrow column, a timeline is a tree and needs the larger half.
+
+Below 120 columns the pane is REFUSED, not shrunk — a 38-column pane beside a
+50-column tree is two unusable columns where there was one usable one. The
+refusal is recomputed every frame rather than stored, so widening the window
+brings it back with no keypress. The tree is RENDERED to the left column, never
+cut down to it, or `← HEAD` (right-aligned to the width it is given) falls off
+every row.
+
+`tab` produces a pane from a cold start rather than only swapping presentations.
+The keybar is the only discovery mechanism this TUI has, and a key it advertises
+has to do the thing it is named for — that was found by pressing it and watching
+nothing happen. The pane also survives `enter`: closing something the user
+opened, because they navigated, is the surprise.
+
+Selection is a background tint that stops at the divider, never reverse video —
+reverse flattens every colour the picker exists to draw. `palette.select` knows
+to re-open the background after each inner reset, since a row is built from
+spans and every span closes with one.
+
+Keys: `↑↓/jk · enter · o · n · a · tab · q` (picker) and
+`↑↓/jk · enter · b · o · f · tab · q` (tree). `f` widens a tree to the whole
+family and narrows it back.
+
+**The trunk is the OLDEST transcript, not the one holding HEAD.** A `/branch`
+copy is always younger than what it copied, so the arm still carrying the
+original file is the one that was there first and everything else hangs off it.
+`trunkChildOf` picks it, and both the row order and the lane allocator read the
+same function so they cannot disagree.
+
+HEAD was the earlier rule and it is right for a single transcript and wrong
+across several: HEAD sits in whichever copy was written last, so the newest
+`/branch` took the trunk's column and the original conversation was drawn as an
+arm off its own copy. Within one transcript nothing ranks the arms that way, so
+the tie goes to the latest — which is where HEAD lands anyway, leaving
+single-file behaviour unchanged.
+
+Separately, **HEAD itself is the newest record anywhere in the view**, not the
+last line of the last file (`headOf`). Those agree for one transcript and stop
+agreeing the moment a family is open, since files are listed oldest-first.
+
+**A `/branch` from the TIP of a session forks nothing.** The original never
+continues, so its last node has exactly one child and the chain runs straight on
+into a different file — a branch you made, drawn as a continuation, with
+`(N sessions)` quietly dropping as the only evidence. `transcriptEnds` treats
+that as a departure too: the child opens its own column and the connector says
+`branched after #N → <new> · <old> ends here`. Scoped to linear chains, because
+at a split every arm holds a subset of its parent's files and testing the sets
+there calls each arm the end of the sessions that went the other way.
 
 **Which session is the branch is NOT a subset test.** The obvious guess, and
 wrong: a branch copies its parent's records, so child ⊂ parent at the moment of

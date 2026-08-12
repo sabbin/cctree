@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { inheritedFor } from '../src/fork-context.js';
+import { inheritedFor, forkStubs } from '../src/fork-context.js';
 
 const FORKED = 'Test simple reply conversation ⑂';
 const PARENT = 'Test simple reply conversation';
@@ -89,4 +89,85 @@ test('a parent created after the fork cannot be its parent', () => {
 test('without a creation time it declines rather than guessing the cut', () => {
   const got = inheritedFor('/p/fork.jsonl', [sidecar(FORKED)], deps({ birth: () => 0 }));
   assert.equal(got, null);
+});
+
+
+// ── the fork's place in a merged tree ───────────────────────────────────────
+//
+// `inheritedFor` answers the single-file question by borrowing the parent's
+// history. In a family view the parent is already on screen, so the missing
+// thing is the fork itself — which has no records at all, and would otherwise
+// be a limb sawn off a tree that claims to show the whole conversation.
+
+const FORK_FILE = '/p/fork.jsonl';
+const PARENT_FILE = '/p/parent.jsonl';
+const withFile = (records, file) => records.map((r) => ({ ...r, file }));
+const stubDeps = (born = {}) => ({
+  birth: (f) => born[f] ?? (f === FORK_FILE ? CUT : CUT - 60_000),
+});
+
+test('an unused fork is placed where it was cut from', () => {
+  const records = [
+    ...withFile(parentRecords, PARENT_FILE),
+    ...withFile([sidecar(FORKED)], FORK_FILE),
+  ];
+  const stubs = forkStubs([PARENT_FILE, FORK_FILE], records, stubDeps());
+  assert.equal(stubs.length, 1);
+  const [stub] = stubs;
+  // E is the last prompt written before the fork existed; F and G came after,
+  // and `/fork` does not move the conversation, so they are the parent's own.
+  assert.equal(stub.parentUuid, 'e', 'attached after the last record it could have seen');
+  assert.equal(stub.kind, 'fork');
+  assert.equal(stub.file, FORK_FILE);
+  assert.equal(stub.timestamp, CUT, 'its creation time is the only time it has');
+  assert.equal(stub.inferred, true, 'and it is never mistaken for a record');
+});
+
+test('a fork with records of its own is never stubbed', () => {
+  // The load-bearing guard, the same one `inheritedFor` opens with: an
+  // inference must never stand in front of real data.
+  const records = [
+    ...withFile(parentRecords, PARENT_FILE),
+    ...withFile([sidecar(FORKED), node('x', '2026-08-12T13:32:00.000Z', 'prompt', 'its own')], FORK_FILE),
+  ];
+  assert.deepEqual(forkStubs([PARENT_FILE, FORK_FILE], records, stubDeps()), []);
+});
+
+test('a single file is left to inheritedFor', () => {
+  // With no parent on screen there is nothing to attach to, and borrowing the
+  // history is the better answer — two mechanisms, no overlap.
+  const records = withFile([sidecar(FORKED)], FORK_FILE);
+  assert.deepEqual(forkStubs([FORK_FILE], records, stubDeps()), []);
+});
+
+test('a fork created before its supposed parent is not placed', () => {
+  const records = [
+    ...withFile(parentRecords, PARENT_FILE),
+    ...withFile([sidecar(FORKED)], FORK_FILE),
+  ];
+  const stubs = forkStubs([PARENT_FILE, FORK_FILE], records, stubDeps({ [FORK_FILE]: CUT - 120_000 }));
+  assert.deepEqual(stubs, [], 'nothing older can be its parent');
+});
+
+test('a /branch copy cannot be mistaken for the fork\'s parent', () => {
+  // `/branch` writes a `custom-title` and does NOT copy the parent\'s
+  // `ai-title`, so a branch carries no matching title and only the true parent
+  // can win — which is what stops a copied prefix claiming the fork.
+  const BRANCH_FILE = '/p/branch.jsonl';
+  const records = [
+    ...withFile(parentRecords, PARENT_FILE),
+    ...withFile(parentRecords.filter((r) => r.uuid), BRANCH_FILE),
+    ...withFile([sidecar(FORKED)], FORK_FILE),
+  ];
+  const stubs = forkStubs([PARENT_FILE, BRANCH_FILE, FORK_FILE], records, {
+    birth: (f) => (f === FORK_FILE ? CUT : f === BRANCH_FILE ? CUT - 30_000 : CUT - 60_000),
+  });
+  assert.equal(stubs.length, 1);
+  assert.equal(stubs[0].uuid.includes('fork'), true);
+});
+
+test('a fork whose parent is absent from the view is not invented', () => {
+  const records = withFile([sidecar(FORKED)], FORK_FILE);
+  const other = withFile([node('z', '2026-08-12T13:29:00.000Z', 'prompt', 'unrelated')], '/p/other.jsonl');
+  assert.deepEqual(forkStubs([FORK_FILE, '/p/other.jsonl'], [...records, ...other], stubDeps()), []);
 });
