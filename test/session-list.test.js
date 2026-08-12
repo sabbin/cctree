@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { describeSessions, renderSessionRows } from '../src/session-list.js';
+import { describeSessions, renderSessionRows, familyFiles } from '../src/session-list.js';
 
 const rec = (uuid, kind, ts, preview = '') => ({
   uuid,
@@ -202,28 +202,189 @@ test('the picker draws the parentage instead of describing it', () => {
   assert.doesNotMatch(branched.text, /branch of/);
   assert.doesNotMatch(original.text, /⑂/);
 
-  assert.match(branched.text, /30m ago/);
-  assert.match(branched.text, /2 prompts/);
+  assert.match(branched.text, /\b30m\b/, 'the age carries no " ago" — the header says AGE');
+  assert.doesNotMatch(branched.text, / ago/);
   assert.match(branched.text, /a different second question/);
-  assert.match(branched.text, /← latest/, 'the most recently active arm is called out');
-  assert.doesNotMatch(original.text, /← latest/, 'and only that one');
+  assert.match(branched.text, /^▸ /, 'the most recently active arm is marked in the gutter');
+  assert.match(original.text, /^ {2}/, 'and only that one');
+  assert.doesNotMatch(branched.text, /← latest/, 'never after the preview, where truncation reaches it');
 });
 
 test('columns stay aligned once the tree indents rows', () => {
-  const rows = renderSessionRows(describeSessions(entries(), { now: NOW }), { width: 120 });
   // Everything after the id lines up, however deep the row sits: the pad goes
-  // after the id, because padding the prefix strands the elbow mid-gutter.
-  const agePositions = rows.map((r) => r.text.indexOf(' ago') - r.ageLabel?.length);
-  const columns = rows.map((r) => r.text.indexOf('prompts'));
-  assert.equal(new Set(columns).size, 1, `prompts column ragged: ${JSON.stringify(rows.map((r) => r.text))}`);
-  void agePositions;
+  // after the id, because padding the prefix strands the elbow mid-gutter. Each
+  // field is right- or left-aligned in a width the header shares, so the check
+  // is simply that every row agrees with the header about where a column ends.
+  const described = describeSessions(entries(), { now: NOW });
+  const all = renderSessionRows(described, { width: 120 });
+  const header = all[0].text;
+  const rows = all.filter((r) => r.id);
+
+  const ageRight = header.indexOf('AGE') + 'AGE'.length;
+  const countRight = header.indexOf('PROMPTS') + 'PROMPTS'.length;
+  const nameLeft = header.indexOf('CONVERSATION');
+  for (const r of rows) {
+    const s = described.find((d) => d.id === r.id);
+    assert.equal(r.text.indexOf(s.ageLabel) + s.ageLabel.length, ageRight, `age ragged: ${r.text}`);
+    assert.equal(r.text.lastIndexOf(String(s.prompts), countRight) + 1, countRight, `count ragged: ${r.text}`);
+    assert.equal(r.text.slice(0, nameLeft).trimEnd().length < nameLeft, true, `name column overrun: ${r.text}`);
+  }
+});
+
+test('the preview starts at the same column on every row', () => {
+  // §1.6. The preview used to start wherever the name happened to end, so the
+  // previews formed a ragged second column and the eye had nothing to return
+  // to — invisible at 100 columns, the dominant defect at 200.
+  const described = describeSessions(entries(), { now: NOW });
+  for (const width of [100, 200]) {
+    const rows = renderSessionRows(described, { width }).filter((r) => r.id);
+    const starts = rows.map((r) => {
+      const s = described.find((d) => d.id === r.id);
+      return r.text.indexOf(s.divergePrompt.slice(0, 12));
+    });
+    assert.equal(new Set(starts).size, 1, `preview column ragged at ${width}: ${JSON.stringify(rows)}`);
+  }
+});
+
+test('the preview is capped, so a wide terminal keeps a right margin', () => {
+  // §1.7. Unclamped, a 200-column terminal ran the preview past 120 characters,
+  // which is not a scan target — it is a wall.
+  const long = 'x'.repeat(300);
+  const rows = describeSessions(
+    [
+      {
+        id: 'wide',
+        file: '/p/wide.jsonl',
+        createdAt: 1000,
+        records: [rec('u1', 'prompt', '2026-08-08T10:00:00.000Z', long)],
+      },
+    ],
+    { now: NOW },
+  );
+  const text = renderSessionRows(rows, { width: 240 }).find((r) => r.id === 'wide').text;
+  const preview = text.slice(text.indexOf('x'));
+  assert.ok(preview.length <= 72, `preview ${preview.length} > 72`);
+  assert.ok(text.length < 240 - 100, 'and the row leaves the right of the screen alone');
+});
+
+test('the header names the columns and is not selectable', () => {
+  // Dropping the literal " prompts" from every row is what buys the preview its
+  // width back; the header is what keeps the bare number readable.
+  const rows = renderSessionRows(describeSessions(entries(), { now: NOW }), { width: 120 });
+  assert.equal(rows[0].id, null, 'the header is not a session');
+  assert.match(rows[0].text, /\bID\b.*\bAGE\b.*\bPROMPTS\b.*\bCONVERSATION\b/);
+
+  const branched = rows.find((r) => r.id === 'branched');
+  // The count right-aligns under its header rather than carrying the word.
+  assert.equal(
+    branched.text.indexOf('2'),
+    rows[0].text.indexOf('PROMPTS') + 'PROMPTS'.length - 1,
+    'the count sits at the right edge of its column',
+  );
+  assert.doesNotMatch(branched.text, /\bprompts\b/, 'the word is redundant once the column is named');
+});
+
+test('top-level conversations are separated, a parent and its branches are not', () => {
+  const rows = renderSessionRows(describeSessions(entries(), { now: NOW }), { width: 120 });
+  const blank = rows.map((r, i) => (r.text === '' ? i : -1)).filter((i) => i >= 0);
+  assert.equal(blank.length, 1, 'one gap, between the two conversations');
+  const at = blank[0];
+  assert.equal(rows[at - 1].id, 'branched', 'the gap comes after a family, never inside one');
+  assert.equal(rows[at + 1].id, 'unrelated');
+  assert.equal(rows[at].id, null, 'and a gap is not selectable');
+
+  const piped = renderSessionRows(describeSessions(entries(), { now: NOW }), { width: 120, group: false });
+  assert.ok(!piped.some((r) => r.text === ''), 'grouping is optional for callers that pipe this');
+});
+
+test('the badge carries its own colour, and a borrowed name is not dimmed', () => {
+  // Both halves of one complaint: dim + truncation made the name hard to read,
+  // and the badge — the only part that tells two arms apart — was dimmed with it.
+  const rows = describeSessions(
+    [
+      {
+        id: 'parent',
+        file: '/p/parent.jsonl',
+        createdAt: 1000,
+        records: [
+          rec('u1', 'prompt', '2026-08-08T10:00:00.000Z', 'do the thing, at length, with detail'),
+          sidecar({ type: 'ai-title', aiTitle: 'Fix the classifier bug' }),
+        ],
+      },
+      {
+        id: 'child',
+        file: '/p/child.jsonl',
+        createdAt: 2000,
+        records: [
+          rec('u1', 'prompt', '2026-08-08T10:00:00.000Z', 'do the thing, at length, with detail'),
+          rec('c1', 'prompt', '2026-08-08T10:30:00.000Z', 'a different follow-up'),
+          sidecar({ type: 'custom-title', customTitle: 'do the thing, at length, with detail (Branch 2)' }),
+        ],
+      },
+    ],
+    { now: NOW },
+  );
+  const text = renderSessionRows(rows, { width: 120, color: true }).find((r) => r.id === 'child').text;
+  assert.match(text, /↳ /, 'provenance is a glyph, not a loss of contrast');
+  assert.match(text, /\x1b\[2m↳ \x1b\[0mFix the classifier/, 'the name itself is at full brightness');
+  assert.match(text, /\x1b\[33m \(Branch 2\)\x1b\[0m/, 'yellow: this is the arm that differs');
+
+  const plain = renderSessionRows(rows, { width: 120 }).find((r) => r.id === 'child').text;
+  assert.doesNotMatch(plain, /\x1b/, 'and colour: false stays free of escape codes');
+});
+
+test('a fork badge is magenta — transplanted history, not another arm', () => {
+  const rows = describeSessions(
+    [
+      {
+        id: 'parent',
+        file: '/p/parent.jsonl',
+        createdAt: 1000,
+        records: [
+          rec('u1', 'prompt', '2026-08-08T10:00:00.000Z', 'do the thing'),
+          sidecar({ type: 'ai-title', aiTitle: 'Test simple reply conversation' }),
+        ],
+      },
+      {
+        id: 'forked',
+        file: '/p/forked.jsonl',
+        createdAt: 2000,
+        records: [
+          rec('u1', 'prompt', '2026-08-08T10:00:00.000Z', 'do the thing'),
+          rec('f1', 'prompt', '2026-08-08T10:30:00.000Z', 'the forked follow-up'),
+          sidecar({ type: 'ai-title', aiTitle: 'Test simple reply conversation \u2442' }),
+        ],
+      },
+    ],
+    { now: NOW },
+  );
+  const text = renderSessionRows(rows, { width: 120, color: true }).find((r) => r.id === 'forked').text;
+  assert.match(text, /\x1b\[35m \(Fork\)\x1b\[0m/);
+});
+
+test('no row is wider than the terminal it was rendered for', () => {
+  // The budget used to be spent twice: the name took `width - 18` and the
+  // trailing prompt took half the width again on top of it, so an 80-column
+  // terminal wrapped. Every row now fits, at every width, including the one
+  // carrying the degraded-mode note.
+  const normal = describeSessions(entries(), { now: NOW });
+  const noTimes = describeSessions(entries().map((e) => ({ ...e, createdAt: 0 })), { now: NOW });
+  for (const width of [80, 100, 200]) {
+    for (const rows of [normal, noTimes]) {
+      for (const r of renderSessionRows(rows, { width })) {
+        assert.ok(r.text.length <= width, `${r.text.length} > ${width}: ${JSON.stringify(r.text)}`);
+      }
+    }
+  }
 });
 
 test('a narrow terminal truncates the preview, not the structure', () => {
-  const rows = renderSessionRows(describeSessions(entries(), { now: NOW }), { width: 60 });
+  const rows = renderSessionRows(describeSessions(entries(), { now: NOW }), { width: 60 }).filter(
+    (r) => r.id,
+  );
   for (const r of rows) {
     assert.match(r.text, /\w{8}/, 'the id survives');
-    assert.match(r.text, /prompts/, 'so does the count');
+    assert.match(r.text, /\d+[mhd]|—/, 'so does the age');
   }
   assert.match(rows.find((r) => r.id === 'branched').text, /└─/, 'and so does the tree');
 });
@@ -437,4 +598,64 @@ test('a title match is not enough on its own to claim a parent', () => {
     { now: NOW },
   );
   assert.equal(rows.find((r) => r.id === 'lookalike').parent, null, 'shares no uuids, so no claim');
+});
+
+
+// ── one conversation is several files ───────────────────────────────────────
+
+test('a family is the whole component, not just this session and its children', () => {
+  // Opening one file draws a straight line through what is really a tree: a
+  // `/branch` is a copy in another file, a `/fork` is a sibling in a third.
+  // From a branch you want the trunk you left AND the arms you left it beside,
+  // so the walk climbs to the root before it descends.
+  const rows = describeSessions(entries(), { now: NOW });
+  const branch = rows.find((r) => r.id === 'branched');
+
+  const fromBranch = familyFiles(rows, branch.file);
+  assert.deepEqual(fromBranch, ['/p/original.jsonl', '/p/branched.jsonl'], 'oldest first, so HEAD lands last');
+  assert.deepEqual(familyFiles(rows, '/p/original.jsonl'), fromBranch, 'either end names the same family');
+
+  // A conversation with no relatives is a family of one, which is what tells
+  // the caller there is nothing to widen to.
+  assert.deepEqual(familyFiles(rows, '/p/unrelated.jsonl'), ['/p/unrelated.jsonl']);
+  assert.equal(familyFiles(rows, '/p/not-here.jsonl'), null, 'an unknown file is not a family of one');
+});
+
+test('a family includes an unused fork, which shares no uuids with anyone', () => {
+  const rows = describeSessions(
+    [
+      {
+        id: 'parent',
+        file: '/p/parent.jsonl',
+        createdAt: 1000,
+        records: [
+          rec('u1', 'prompt', '2026-08-08T10:00:00.000Z', 'do the thing'),
+          sidecar({ type: 'ai-title', aiTitle: 'Test simple reply conversation' }),
+        ],
+      },
+      {
+        id: 'branch',
+        file: '/p/branch.jsonl',
+        createdAt: 2000,
+        records: [
+          rec('u1', 'prompt', '2026-08-08T10:00:00.000Z', 'do the thing'),
+          rec('b1', 'prompt', '2026-08-08T10:30:00.000Z', 'the branch follow-up'),
+        ],
+      },
+      {
+        id: 'fork',
+        file: '/p/fork.jsonl',
+        createdAt: 3000,
+        records: [sidecar({ type: 'ai-title', aiTitle: 'Test simple reply conversation \u2442' })],
+      },
+    ],
+    { now: NOW },
+  );
+  // The fork is nested by its title alone — it has no uuids to share — and the
+  // family has to carry it or the tree view loses the limb entirely.
+  assert.deepEqual(familyFiles(rows, '/p/branch.jsonl'), [
+    '/p/parent.jsonl',
+    '/p/branch.jsonl',
+    '/p/fork.jsonl',
+  ]);
 });

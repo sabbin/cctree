@@ -20,6 +20,26 @@
 // the one it shares the most uuids with. That agrees with both branches this
 // project witnessed, where `/branch` named the parent explicitly.
 
+import { PLAIN, makePalette, vlen } from './palette.js';
+
+/**
+ * The column headings. `prompts` doubles as the minimum width of its column, so
+ * the counts right-align under the word that names them.
+ */
+const HEAD = { id: 'ID', age: 'AGE', prompts: 'PROMPTS', name: 'CONVERSATION' };
+
+/** The single space between the name column and the preview column. */
+const GAP_NAME = 1;
+
+// The preview is clamped at both ends: below 20 it says nothing, and above 72 —
+// about a line of prose — it stops being a scan target and becomes a wall.
+const PREVIEW_MIN = 20;
+const PREVIEW_MAX = 72;
+// Past 34 a name is eating width the preview needs more; below 4 characters of
+// name the column has stopped saying anything the badge does not.
+const NAME_MAX = 34;
+const NAME_MIN = 4;
+
 /** How long ago, in the shortest form that is still honest. */
 function age(ms, now) {
   if (!ms) return '—';
@@ -31,21 +51,58 @@ function age(ms, now) {
 }
 
 /**
- * A conversation reads as its name, with the prompt it left off at trailing
- * behind it. An inherited name is dimmed: it belongs to an ancestor, and looking
- * identical to a name of its own would be a lie about where it came from.
+ * The name cell: what this conversation is called, and what kind of arm it is.
+ *
+ * An inherited name used to be dimmed wholesale, which cost twice over: dim plus
+ * truncation makes a name genuinely hard to read, and the badge — the ONLY part
+ * that tells two arms of one conversation apart — inherited the dimming with it.
+ * So the provenance moves to a `↳` glyph, which says "borrowed from an ancestor"
+ * in two columns without spending the name's legibility, and the badge steps out
+ * of the dimming to carry a colour of its own: branch (this arm differs here) or
+ * graft (history was transplanted).
+ *
+ * @param {object} pal palette from `makePalette`; identity at depth 0
+ * @param {number} w visible columns available, or Infinity to measure natural width
  */
-function label(s, width, { DIM, RESET }) {
-  const identity = s.divergePrompt ?? s.lastPrompt;
-  const tail = truncate(identity, Math.max(16, Math.floor(width / 2)));
-  if (!s.name) return truncate(identity, width) || `${DIM}(no prompt)${RESET}`;
-  const badge = s.badge && !s.alias ? ` (${s.badge})` : '';
-  const name = truncate(s.name, Math.max(16, width - 18 - badge.length));
-  // Dimmed when the name belongs to an ancestor: looking identical to a name of
-  // its own would misrepresent where it came from.
-  const shown = s.nameSource === 'inherited' ? `${DIM}${name}${badge}${RESET}` : `${name}${badge}`;
-  return tail ? `${shown}  ${DIM}${tail}${RESET}` : shown;
+function nameParts(s, pal) {
+  if (!s.name) return { lead: '', badge: '', fixed: 0, natural: 0 };
+  // An alias is what you chose to call it, so it carries neither provenance
+  // glyph nor badge: there is nothing borrowed about it.
+  const badgeText = s.badge && !s.alias ? ` (${s.badge})` : '';
+  const badge = badgeText ? (FORK_BADGE.test(s.badge) ? pal.graft(badgeText) : pal.branch(badgeText)) : '';
+  const lead = s.nameSource === 'inherited' ? pal.faint('↳ ') : '';
+  // Everything measured with vlen — both pieces carry escape codes, and at
+  // truecolor an escape is 19 characters that occupy no columns at all.
+  const fixed = vlen(lead) + vlen(badge);
+  return { lead, badge, fixed, natural: fixed + s.name.length };
 }
+
+function nameCell(s, pal, w = Infinity) {
+  const { lead, badge, fixed } = nameParts(s, pal);
+  if (!s.name) return '';
+  // The badge is protected: truncation eats the name, never the qualifier, since
+  // the qualifier is the part that tells two arms of one conversation apart. The
+  // column is sized to guarantee the room (see NAME_MIN), so this floor is only
+  // ever reached on a terminal too narrow for the picker to be much use anyway.
+  const room = w === Infinity ? Infinity : Math.max(NAME_MIN, w - fixed);
+  return `${lead}${truncate(s.name, room)}${badge}`;
+}
+
+/**
+ * The preview cell: the prompt that says where this arm went.
+ *
+ * Neither end of the prompt list identifies an arm — see `describeSessions` —
+ * so this is the divergence prompt, falling back to the last one.
+ */
+function previewCell(s, pal, w) {
+  const identity = s.divergePrompt ?? s.lastPrompt;
+  const text = truncate(identity, w);
+  if (!text) return s.name ? '' : pal.faint('(no prompt)');
+  return pal.machine(text);
+}
+
+/** Which badges mean "transplanted history" rather than "another arm". */
+const FORK_BADGE = /fork/i;
 
 function truncate(s, n) {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -271,6 +328,37 @@ export function describeSessions(entries, { now = 0, aliases = new Map() } = {})
 }
 
 /**
+ * Every file in one conversation: the root of `file`'s family, and everything
+ * descended from it. Pure — reads the `parent`/`children` links
+ * `describeSessions` already worked out.
+ *
+ * The whole component, not just this session's own children, because that is
+ * what "the tree" means: from a branch you want the trunk you left AND the
+ * siblings you left it beside. Oldest first, so a caller merging them still
+ * resolves HEAD to the newest file.
+ *
+ * @returns {string[]|null} null when `file` is not one of these sessions
+ */
+export function familyFiles(sessions, file) {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  let root = sessions.find((s) => s.file === file);
+  if (!root) return null;
+  const climbed = new Set();
+  while (root.parent && byId.has(root.parent.id) && !climbed.has(root.id)) {
+    climbed.add(root.id);
+    root = byId.get(root.parent.id);
+  }
+  const out = [];
+  const walk = (node) => {
+    if (!node || out.includes(node)) return; // a cycle cannot happen, but never hang
+    out.push(node);
+    for (const id of node.children ?? []) walk(byId.get(id));
+  };
+  walk(root);
+  return out.sort((a, b) => a.createdAt - b.createdAt).map((s) => s.file);
+}
+
+/**
  * Render the picker as a forest. Pure — returns rows tagged with the session
  * they carry, the same shape the tree view uses, so selection and scrolling are
  * written once for both views.
@@ -284,11 +372,14 @@ export function describeSessions(entries, { now = 0, aliases = new Map() } = {})
  *
  * @returns {{text: string, id: string|null}[]}
  */
-export function renderSessionRows(sessions, { color = false, width = 100 } = {}) {
-  const DIM = color ? '\x1b[2m' : '';
-  const CYAN = color ? '\x1b[36m' : '';
-  const GREEN = color ? '\x1b[32m' : '';
-  const RESET = color ? '\x1b[0m' : '';
+export function renderSessionRows(
+  sessions,
+  { color = false, palette = null, width = 100, group = true, selected = null } = {},
+) {
+  // The renderer never builds an escape: it is handed a palette and calls it.
+  // `color: true` resolves to the 16-colour tier, which is what the tests and
+  // any caller with no depth detection get.
+  const pal = palette ?? (color ? makePalette(4) : PLAIN);
   if (!sessions.length) return [{ text: '  no transcripts for this directory', id: null }];
 
   const byId = new Map(sessions.map((s) => [s.id, s]));
@@ -302,6 +393,7 @@ export function renderSessionRows(sessions, { color = false, width = 100 } = {})
     seen.add(node.id);
     ordered.push({
       node,
+      depth,
       prefix: depth === 0 ? '' : `${prefix}${isLast ? '└─' : '├─'}`,
     });
     const kids = (node.children ?? [])
@@ -319,26 +411,141 @@ export function renderSessionRows(sessions, { color = false, width = 100 } = {})
 
   // The connector must sit immediately left of the id it points at, so the pad
   // goes AFTER the id: padding the prefix itself strands the elbow mid-gutter.
+  // That is why prefix and id are ONE field here rather than two.
   const prefixW = Math.max(...ordered.map((o) => o.prefix.length));
   const ageW = Math.max(3, ...sessions.map((s) => s.ageLabel.length));
-  const promptW = Math.max(...sessions.map((s) => String(s.prompts).length));
-  const used = 2 + prefixW + 8 + 2 + ageW + 4 + 2 + promptW + 8 + 2;
-  const previewW = Math.max(20, width - used - 10);
+  // Wide enough for the column header, so the counts right-align under the word
+  // that names them. The header is what lets the row drop the literal
+  // " prompts", which cost more columns than this floor does.
+  const promptsW = Math.max(HEAD.prompts.length, ...sessions.map((s) => String(s.prompts).length));
 
-  return ordered.map(({ node: s, prefix }) => {
-    // The only label left is the one that says direction is unknowable here.
+  // Everything left of the name, per the column table. `used` deliberately stops
+  // there, because the name column is the one that varies with the data.
+  const USED_MAX = 2 + prefixW + 8 + 2 + ageW + 2 + promptsW + 2;
+
+  // The name gets a column of its own so every preview starts at the same screen
+  // column. Without it the previews form a ragged second column and the eye has
+  // nothing to return to — invisible at 100 cols, the dominant defect at 200.
+  // Capped at 34: past that a name is eating width the preview needs more.
+  // Capped three ways: by NAME_MAX, by the longest name there actually is, and
+  // by what the row can afford — a long name on a narrow terminal gives way to
+  // the preview rather than pushing the row past the screen edge.
+  //
+  // With one exception, and it is the whole reason this is not a one-liner: the
+  // `↳` and the badge cannot be truncated (§1.3), so a column narrower than
+  // those plus a few characters of name would overflow and take the preview
+  // column with it. Below that point the PREVIEW yields instead, down to
+  // nothing — a ragged column is a worse failure than a short one.
+  const parts = ordered.map((o) => nameParts(o.node, pal));
+  const natural = Math.max(0, ...parts.map((n) => n.natural));
+  const floor = Math.max(0, ...parts.map((n) => (n.natural ? n.fixed + NAME_MIN : 0)));
+  const affordable = width - USED_MAX - GAP_NAME - PREVIEW_MIN;
+  const nameW = Math.max(0, Math.min(NAME_MAX, natural, Math.max(floor, affordable)));
+
+  // Clamped, not merely floored: on a 200-column terminal an unclamped preview
+  // runs past 120 characters, which is not a scan target, it is a wall. 72 is
+  // about a line of prose. What is left over stays empty — the right margin is
+  // what lets the column read as a column.
+  // PREVIEW_MIN is a goal, not a floor: when the name column had to keep its
+  // badge the remaining width is whatever is left, and 0 is a legitimate answer.
+  const previewW = Math.max(0, Math.min(PREVIEW_MAX, width - USED_MAX - nameW - GAP_NAME));
+
+  /** One field: pad to `w` by VISIBLE width, since the text may carry escapes. */
+  const cell = (text, w, align = 'left') => {
+    const fill = ' '.repeat(Math.max(0, w - vlen(text)));
+    return align === 'right' ? `${fill}${text}` : `${text}${fill}`;
+  };
+
+  /**
+   * The column table, and the only place row geometry is decided.
+   *
+   * The header is laid out by this same function, so a field cannot pad itself
+   * one way in a row and another way in the header — which is exactly how the
+   * spacing drifted when each field padded independently.
+   *
+   * A row with no name lets the preview start in the name column, so the two
+   * merge into one field rather than leaving a hole where a name would be.
+   */
+  const layout = ({ gutter = '', id = '', age = '', prompts = '', name = null, preview = '' }) => {
+    const fields = [
+      [cell(gutter, 2)],
+      [cell(id, prefixW + 8)],
+      ['  '],
+      [cell(age, ageW, 'right')],
+      ['  '],
+      [cell(prompts, promptsW, 'right')],
+      ['  '],
+    ];
+    if (name === null) fields.push([cell(preview, nameW + GAP_NAME + previewW)]);
+    else {
+      fields.push([cell(name, nameW)]);
+      if (nameW) fields.push([' '.repeat(GAP_NAME)]);
+      fields.push([cell(preview, previewW)]);
+    }
+    return fields.map(([t]) => t).join('').trimEnd();
+  };
+
+  const out = [
+    {
+      text: pal.machine(
+        layout({ id: HEAD.id, age: HEAD.age, prompts: HEAD.prompts, name: HEAD.name, preview: '' }),
+      ),
+      id: null, // unselectable, like the connector rows in the tree view
+    },
+  ];
+
+  return out.concat(
+    ordered.flatMap(({ node: s, prefix, depth }, i) => {
+      // A blank line between top-level conversations, and only there — a parent
+      // and its branches are one thing and must stay visually joined. The gap
+      // marks where a family ends, so it is spent only where there is a family
+      // on one side of it: with no creation times nothing has a parent, and a
+      // gap between every row would double the list to show structure that is
+      // not there. The option exists so a piped listing can turn it off.
+      const family = s.children?.length || ordered[i - 1]?.depth > 0;
+      const gap = group && depth === 0 && i > 0 && family ? [{ text: '', id: null }] : [];
+      return gap.concat(rowFor(s, prefix));
+    }),
+  );
+
+  function rowFor(s, prefix) {
+    // The one label left is the one that says direction is unknowable here. It
+    // is spent from the preview's own budget: the preview is left-aligned, so
+    // shortening it moves nothing, while appending past the column would.
     const rel =
-      s.createdAt === 0 && s.shares.length ? `${DIM}  shares history with ${s.shares.length}${RESET}` : '';
-    const mark = s.id === latest.id ? `${GREEN}  ← latest${RESET}` : '';
-    const text =
-      `  ${DIM}${prefix}${RESET}` +
-      `${CYAN}${s.id.slice(0, 8)}${RESET}` +
-      `${' '.repeat(prefixW - prefix.length)}` +
-      `  ${DIM}${s.ageLabel.padStart(ageW)} ago${RESET}` +
-      `  ${String(s.prompts).padStart(promptW)} prompts` +
-      `  ${label(s, previewW, { DIM, RESET })}` +
-      rel +
-      mark;
-    return { text, id: s.id };
-  });
+      s.createdAt === 0 && s.shares.length ? pal.machine(`  shares history with ${s.shares.length}`) : '';
+    const name = nameCell(s, pal, nameW);
+    // A nameless row lets the preview start in the name column, so it is budgeted
+    // for both columns at once rather than truncating at a boundary that is not
+    // being drawn.
+    // Capped at PREVIEW_MAX either way: starting in the name column moves where
+    // the preview begins, not how long a line of prose is worth reading.
+    const room = Math.min(PREVIEW_MAX, name ? previewW : nameW + GAP_NAME + previewW) - vlen(rel);
+    const preview = previewCell(s, pal, Math.max(8, room));
+
+    // The most recently active conversation is the one you are most often
+    // looking for, and a `← latest` marker appended after the preview was the
+    // first thing a narrow terminal ate — the one row you wanted to find was the
+    // one whose marker disappeared. So it moves to the two places truncation
+    // cannot reach: the gutter (the same column the tree marks its selection in)
+    // and the id itself, in the colour that means "you are here".
+    const isLatest = s.id === latest.id;
+    const isSel = selected != null && s.id === selected;
+    // `▸` is the selection signal at EVERY tier — with no colour at all it is
+    // the only one there is, which is why it lives in the gutter and not in a
+    // background the 16-colour tier cannot paint.
+    const gutter = isSel ? '▸' : isLatest ? pal.head('▸') : '';
+    const short = s.id.slice(0, 8);
+    return {
+      text: layout({
+        gutter,
+        id: `${pal.faint(prefix)}${isLatest ? pal.head(short) : pal.machine(short)}`,
+        age: pal.machine(s.ageLabel),
+        prompts: String(s.prompts),
+        name: name || null,
+        preview: `${preview}${rel}`,
+      }),
+      id: s.id,
+    };
+  }
 }

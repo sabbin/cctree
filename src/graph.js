@@ -94,8 +94,22 @@ export function buildGraph(records, { linearize = true } = {}) {
   };
   for (const node of nodes.values()) node.children.sort(cmp);
 
-  // Before anything reads the shape of the tree. topoOrder, tips, forks and the
-  // lane allocator all derive from children, so a phantom fork left in place
+  // Which transcript is the trunk. Callers hand records over oldest-file-first
+  // (`listSessions` reversed, and the family list sorted by birthtime), so first
+  // appearance IS creation order — and a `/branch` copy is always younger than
+  // what it copied. `trunkRank` is the oldest transcript a node still belongs
+  // to, which is what makes the ORIGINAL conversation the spine and every copy
+  // an arm off it, however recently the copy was written.
+  const fileRank = new Map();
+  for (const r of records) if (r.file != null && !fileRank.has(r.file)) fileRank.set(r.file, fileRank.size);
+  for (const node of nodes.values()) {
+    let rank = Infinity;
+    for (const f of node.files) rank = Math.min(rank, fileRank.get(f) ?? Infinity);
+    node.trunkRank = rank;
+  }
+
+  // Before anything reads the shape of the tree. topoOrder, tips, splits and the
+  // lane allocator all derive from children, so a phantom split left in place
   // here is one the whole pipeline believes.
   const relinked = linearize ? linearizeTurns(nodes, cmp) : [];
 
@@ -111,7 +125,7 @@ export function buildGraph(records, { linearize = true } = {}) {
 }
 
 /**
- * Undo the phantom fork that parallel tool calls write.
+ * Undo the phantom split that parallel tool calls write.
  *
  * A turn that issues several tool calls is one API request, and the assistant
  * cannot branch inside one — so a fork whose arms share a requestId is an
@@ -195,7 +209,7 @@ export function linearizeTurns(nodes, cmp) {
 
       // Splice, do not append. Whatever already hangs off the end of the turn is
       // the NEXT turn, and it belongs after the call being moved, not beside it —
-      // appending here merely relocates the phantom fork one node down, which is
+      // appending here merely relocates the phantom split one node down, which is
       // what the first cut of this did.
       const follow = tail.children.filter((u) => !inTurn(nodes.get(u), rq));
 
@@ -223,25 +237,34 @@ export function linearizeTurns(nodes, cmp) {
 /** Chronological order that never emits a child before its parent. */
 export function topoOrder(nodes, roots) {
   const out = [];
-  const ready = [...roots];
   const seen = new Set();
 
-  const pick = () => {
-    let best = 0;
-    for (let i = 1; i < ready.length; i++) {
-      const a = nodes.get(ready[i]);
-      const b = nodes.get(ready[best]);
-      if ((a.timestamp ?? 0) - (b.timestamp ?? 0) < 0) best = i;
-    }
-    return ready.splice(best, 1)[0];
+  // Depth first, each arm drawn whole before the next, and the TRUNK child last
+  // so the trunk column runs unbroken down the left and ends at the bottom.
+  //
+  // This replaced a chronological ready-queue, and the reason is worth keeping:
+  // under chronological order an arm's first node lands wherever its timestamp
+  // falls, so its connector meets a COLUMN rather than the row it left — a
+  // `/branch` made an hour after its sibling was drawn elbowing off whatever
+  // happened to be in that column at the time. Depth first puts an arm's first
+  // node directly under its parent, so the elbow lands where the split is. The
+  // cost is that rows are no longer a timeline, and `#N` counts down the tree
+  // rather than through the clock.
+  const ordered = (uuid) => {
+    const node = nodes.get(uuid);
+    if (node.children.length < 2) return node.children;
+    const trunk = trunkChildOf(nodes, node);
+    return [...node.children.filter((c) => c !== trunk), ...(trunk ? [trunk] : [])];
   };
 
-  while (ready.length) {
-    const uuid = pick();
+  const stack = [...roots].reverse();
+  while (stack.length) {
+    const uuid = stack.pop();
     if (seen.has(uuid)) continue;
     seen.add(uuid);
     out.push(uuid);
-    ready.push(...nodes.get(uuid).children);
+    const kids = ordered(uuid);
+    for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
   }
   // Anything left (cycle from a corrupt file) gets appended rather than dropped.
   for (const uuid of nodes.keys()) if (!seen.has(uuid)) out.push(uuid);
@@ -249,16 +272,90 @@ export function topoOrder(nodes, roots) {
 }
 
 /** Tips, HEAD, fork points, prompt numbering. */
+/**
+ * Which record is HEAD — where the conversation actually is.
+ *
+ * The newest record anywhere in the view, NOT the last line of the last file.
+ * Those two agree for a single transcript and stop agreeing the moment a family
+ * is open: files are listed oldest-created-first, so "the last file" is the most
+ * recently CREATED one, which after a `/branch` is a copy you made and then left.
+ *
+ * Measured on a real three-session family: the trunk was continued five minutes
+ * AFTER the branch file was created, and HEAD still pointed into the branch —
+ * which then handed the trunk's column to that branch, since `assignLanes`
+ * follows HEAD, and drew the message you had just written as a side arm.
+ *
+ * Inferred records are excluded. A `/fork` stub carries the fork file's creation
+ * time and can easily be the newest thing in the view, but nobody has been there
+ * — that is the whole point of an unused fork.
+ */
+/**
+ * Does any transcript stop at `parent`, so that `child` carries on without it?
+ *
+ * A `/branch` taken from the TIP of a session leaves no fork: the original never
+ * continues, so its last node has exactly one child and the chain runs straight
+ * on into a different file. Topologically that is a continuation; to the person
+ * who ran `/branch` it is a new conversation, and it is the unit they act on —
+ * `o` resumes a session, `b` branches one. So the tree treats it as a departure
+ * too, and this is the test all three places agree on.
+ */
+/**
+ * Which child continues the conversation, as opposed to branching off it.
+ *
+ * The oldest transcript wins: a `/branch` copy is younger than what it copied,
+ * so the arm still carrying the original file is the one that was there first
+ * and everything else hangs off it. Within one transcript nothing distinguishes
+ * the arms that way, so the tie goes to the LATEST — the arm you went to last is
+ * the one you carried on in, which is also where HEAD lands in practice.
+ *
+ * Used for two things that must agree: the trunk child is drawn LAST so the
+ * trunk column runs unbroken down the left, and it is the child that inherits
+ * its parent's column.
+ */
+export function trunkChildOf(nodes, node) {
+  let best = null;
+  for (const uuid of node.children) {
+    const kid = nodes.get(uuid);
+    if (!kid) continue;
+    if (
+      !best ||
+      kid.trunkRank < best.trunkRank ||
+      (kid.trunkRank === best.trunkRank && (kid.timestamp ?? 0) > (best.timestamp ?? 0))
+    ) {
+      best = kid;
+    }
+  }
+  return best?.uuid ?? null;
+}
+
+export const transcriptEnds = (parent, child) =>
+  !!parent &&
+  !!child &&
+  // Only on a LINEAR chain. At a split every arm holds a subset of its parent's
+  // files — that is what a split is — so testing the sets there calls each arm
+  // the end of the sessions that went the other way, which is nonsense.
+  parent.children.length === 1 &&
+  [...parent.files].some((f) => !child.files.has(f));
+
+export function headOf(records) {
+  let best = null;
+  for (const r of records) {
+    if (!r.uuid || !r.timestamp || r.inferred) continue;
+    if (!best || r.timestamp > best.timestamp) best = r;
+  }
+  return best?.uuid ?? null;
+}
+
 export function annotate(graph, { headUuid = null } = {}) {
   const { nodes, order } = graph;
   const tips = [];
-  const forks = [];
+  const splits = [];
   let promptNo = 0;
 
   for (const uuid of order) {
     const n = nodes.get(uuid);
     if (n.children.length === 0) tips.push(uuid);
-    if (n.children.length > 1) forks.push(uuid);
+    if (n.children.length > 1) splits.push(uuid);
     if (n.kind === 'prompt') n.promptNo = ++promptNo;
   }
   // HEAD defaults to the most recent tip.
@@ -270,7 +367,12 @@ export function annotate(graph, { headUuid = null } = {}) {
   for (const t of tips) nodes.get(t).isTip = true;
   if (head) nodes.get(head).isHead = true;
   graph.tips = tips;
-  graph.forks = forks;
+  // A SPLIT, not a fork. Three different things put two children on one node —
+  // a rewind, a `/branch`, and a `/fork` — and `/fork` is the rarest of them.
+  // Calling every divergence a fork made the tree claim a mechanism it has no
+  // evidence for, which is exactly what a reader who had just run `/branch`
+  // twice noticed. `splits` is what the graph can actually see.
+  graph.splits = splits;
   graph.head = head;
   return graph;
 }
@@ -305,6 +407,10 @@ export function collapse(graph, { enabled = true } = {}) {
     while (cur.children.length === 1) {
       const next = nodes.get(cur.children[0]);
       if (!collapsible(next) || next.children.length > 1 || next.summary) break;
+      // Never across a transcript boundary. A run that swallows one hides the
+      // branch point inside an opaque `assistant · N msgs` and leaves the lane
+      // change with nowhere to happen.
+      if (transcriptEnds(cur, next)) break;
       absorbed.add(next.uuid);
       parts.push(next.kind);
       span++;

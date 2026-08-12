@@ -13,7 +13,7 @@ cctree show --no-color
 
 Useful variants:
 
-- `cctree show --all --no-color` — merge every session in this project directory, so `/branch` forks appear as one tree rather than several.
+- `cctree show --all --no-color` — merge every session in this project directory, so `/branch` copies appear as one tree rather than several.
 - `cctree show --raw --no-color` — do not collapse assistant/tool runs into single nodes.
 - `cctree sessions` — list transcripts for this directory, newest first.
 - `cctree stats` — record-kind histogram and parser issues. Run this after upgrading Claude Code; it is the format-drift canary.
@@ -78,7 +78,18 @@ user run them in their own terminal.
 | `▪` | slash-command plumbing (the caveat/invocation/stdout records of a `/command`) |
 | `?` | a record with a uuid whose shape is unrecognised — report it, it means format drift |
 
-A `├─┐  forked after #N` row means a lane diverged after prompt `#N`. Treat these
+Rows are depth-first: each arm is drawn whole before the next, and the trunk is
+drawn LAST, so the leftmost column runs unbroken to the bottom. Chronology holds
+within a lane only — a branch of a branch appears under its parent, not wherever
+its clock would have put it. `#N` therefore counts down the tree, not the clock.
+
+A `├─┐` followed by a `split after #N` row means a lane diverged after prompt
+`#N`. The trunk arm says `#N continues` instead — it is the conversation
+carrying on, not a branch. `branched after #N → <id>` marks a `/branch` taken
+from the tip of a session, which forks nothing and merely changes transcript. A
+`N arms` marker on a row names the split point itself.
+"Split" is deliberate: a rewind, a `/branch` and a `/fork` all produce one, and
+the graph cannot tell which. `⑂` means a real `/fork` and nothing else. Treat these
 with suspicion for now: parallel tool calls in one assistant turn also produce a
 structural fork, so not every fork is a rewind (see CLAUDE.md, Open).
 
