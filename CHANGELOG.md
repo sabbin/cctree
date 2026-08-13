@@ -188,6 +188,13 @@ swallowed one hid the branch point inside an opaque `assistant · N msgs`.
   kinds reported a boundary that does not exist, naming half a path where a
   session id belongs.
 - TUI status lines emitted raw escapes under `NO_COLOR`.
+- The picker nested two branches of one conversation as a chain. Branching twice
+  from the same conversation gives both copies the identical prefix, so "most
+  shared uuids" ties exactly — and the tie went to the *closer* ancestor, making
+  the second copy a child of the first, which was never its parent. A tie now
+  goes to the OLDER candidate: a child sharing exactly the same uuids with two
+  sessions was cut at or before the point where those two diverge from each
+  other, so it is a sibling of the younger one.
 
 ### Notes for the next person
 

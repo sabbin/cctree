@@ -228,7 +228,17 @@ branching, but the parent keeps growing and eventually contains the child
 outright. Measured here — the subset rule declared the live session the ancestor
 of the sessions it had itself been branched from. What holds is that a branch
 shares its ENTIRE prefix with its immediate parent: **among sessions created
-earlier, the parent is the one sharing the most uuids.** Creation order has to
+earlier, the parent is the one sharing the most uuids — and on a TIE, the
+OLDER of them.**
+
+The tie-break is the opposite of the obvious guess and it is not a detail.
+Branch twice from one conversation and both copies carry the identical prefix,
+so the counts tie exactly; preferring the *closer* ancestor nested the second
+copy under the first, which was never its parent. If a child shares exactly the
+same uuids with two candidates, it was cut at or before the point where those
+two diverge from EACH OTHER — so it is a SIBLING of the younger one, and
+attaching it to their common ancestor is what draws it as one. Measured on four
+real sessions: 12 shared uuids with each of two candidates. Creation order has to
 come from the filesystem (`birthtime`), because copied records keep their
 original timestamps. Verified against the only ground truth available — the two
 `/branch` messages in this project's own history, which name the parent. Where
