@@ -79,3 +79,12 @@ test('--family draws the branch point from inside the copy, and leaves strangers
   assert.match(out, /#2 continues → aaaaaaaa/);
   assert.doesNotMatch(out, /unrelated/, 'a family is one conversation, not the project');
 });
+
+test('a switch never swallows the session named after it', () => {
+  const p = project();
+  // `--no-color` and `--family` are switches; the id after them is the session.
+  // Read as their value, the CLI fell back to the newest transcript instead.
+  const out = show(p, '--family', COPY);
+  assert.match(out, /bbbbbbbb-2222/);
+  assert.match(out, /split after #2 test b/);
+});

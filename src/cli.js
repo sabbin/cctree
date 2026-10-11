@@ -59,6 +59,11 @@ Options:
   --raw         do not collapse assistant/tool runs into single nodes
 `;
 
+// The flags that take a value. Every other flag is a switch, and a switch must
+// never take the next word: `show --no-color <session>` once read the session
+// as the switch's value and quietly showed the newest transcript instead.
+const VALUED = new Set(['at', 'before', 'cwd', 'emit', 'out', 'select', 'to', 'width']);
+
 function parseArgs(argv) {
   const flags = {};
   const positional = [];
@@ -68,7 +73,7 @@ function parseArgs(argv) {
       const [k, v] = a.slice(2).split('=');
       const key = k.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
       if (v !== undefined) flags[key] = v;
-      else if (argv[i + 1] && !argv[i + 1].startsWith('--')) flags[key] = argv[++i];
+      else if (VALUED.has(key) && argv[i + 1] && !argv[i + 1].startsWith('--')) flags[key] = argv[++i];
       else flags[key] = true;
     } else positional.push(a);
   }
