@@ -1,0 +1,14 @@
+{
+  "name": "cctree",
+  "owner": {
+    "name": "Sabin Pandelovitch"
+  },
+  "description": "ccTree: see and steer the branches of your Claude Code conversations.",
+  "plugins": [
+    {
+      "name": "cctree",
+      "source": "./",
+      "description": "Git-style graph of your Claude Code conversations, in a pane beside the session."
+    }
+  ]
+}

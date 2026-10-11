@@ -231,8 +231,17 @@ export function describeSessions(entries, { now = 0, aliases = new Map() } = {})
         if (other === row || other.createdAt >= row.createdAt) continue;
         const share = row.shares.find((sh) => sh.id === other.id);
         if (!share) continue;
-        // Most shared prefix wins; a tie goes to the closer ancestor.
-        if (!best || share.count > best.count || (share.count === best.count && other.createdAt > best.createdAt)) {
+        // Most shared prefix wins. A TIE goes to the OLDER candidate, which is
+        // the opposite of the obvious guess and is the whole point: if a child
+        // shares exactly the same uuids with two sessions, it was cut at or
+        // before the point where those two diverge from EACH OTHER — so it is a
+        // sibling of the younger one, not its descendant. Attaching to their
+        // common ancestor is what makes them siblings on screen.
+        //
+        // Measured: branching twice from one conversation gives both copies the
+        // same 12-uuid prefix, and "closer ancestor" nested the second copy
+        // under the first, which was never its parent.
+        if (!best || share.count > best.count || (share.count === best.count && other.createdAt < best.createdAt)) {
           best = { id: other.id, count: share.count, createdAt: other.createdAt };
         }
       }

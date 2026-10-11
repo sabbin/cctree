@@ -14,6 +14,21 @@ Phases 0, 1, 2a and a first 3 are built and tested. Graft (§5.3) is not started
 - Phase 3 — companion TUI (`src/tui.js`, `cctree tui`), zero-dependency, plus
   `bin/cctree-go`, which turns browse → branch → `claude -r` into one keystroke
 - Phase 3b — session picker (`src/session-list.js`), the TUI's default view
+- In-app pane — `hooks/panel.tsx`, a Claude Code mod (function hooks module)
+  docking the tree beside the conversation; `/cctree` opens it. It spawns
+  `cctree show --json` / `cctree sessions --json` with FORCE_COLOR=3 and turns
+  the escapes back into spans, because a hooks module has no Node and src/ reads
+  through node:fs — and it keeps one renderer. Same two views as the TUI (`s`
+  flips picker ↔ tree), but it opens on the TREE of the session beside it, as
+  its FAMILY (`--family`), since a lone `/branch` copy is a straight line through
+  the split that made it. `f` narrows to the one transcript. Rows are buttons (click, or `j`/`k`); a picked row offers
+  `c` continue from here and `e` ask this again, each a `cctree branch --to` /
+  `--before <uuid>` followed by `/resume` into the copy — no plugin API can
+  rewind, so a jump is a branch you switch into. In the picker a conversation
+  folds its branches away (`−` / `+N`, kept in `$.store` across sessions) and
+  `n` renames it through `cctree name`. The pane owns its scrolling — the frame
+  is exactly the pane's height, so header and footer stay put. Tests:
+  `claude plugin test .` (not part of `npm test`).
 - Plugin glue — `skills/show/SKILL.md`, `hooks/hooks.json`, `bin/cctree`,
   installed for development by symlinking the repo to `~/.claude/skills/cctree`,
   which auto-loads as `cctree@skills-dir` with no marketplace and no publishing
@@ -196,6 +211,13 @@ Keys: `↑↓/jk · enter · o · n · a · tab · q` (picker) and
 `↑↓/jk · enter · b · o · f · tab · q` (tree). `f` widens a tree to the whole
 family and narrows it back.
 
+**Oldest means CREATED, never modified.** Every caller hands `buildGraph` its
+files in creation order (`byCreation`, birthtime). `--all` and the TUI's `a` once
+sorted by mtime, which is right until you go back to the original after
+branching it: one prompt there makes it the newest file, the copy takes the
+trunk, and the original is drawn as an arm of its own branch. Pinned by
+`test/family.test.js`.
+
 **The trunk is the OLDEST transcript, not the one holding HEAD.** A `/branch`
 copy is always younger than what it copied, so the arm still carrying the
 original file is the one that was there first and everything else hangs off it.
@@ -228,7 +250,17 @@ branching, but the parent keeps growing and eventually contains the child
 outright. Measured here — the subset rule declared the live session the ancestor
 of the sessions it had itself been branched from. What holds is that a branch
 shares its ENTIRE prefix with its immediate parent: **among sessions created
-earlier, the parent is the one sharing the most uuids.** Creation order has to
+earlier, the parent is the one sharing the most uuids — and on a TIE, the
+OLDER of them.**
+
+The tie-break is the opposite of the obvious guess and it is not a detail.
+Branch twice from one conversation and both copies carry the identical prefix,
+so the counts tie exactly; preferring the *closer* ancestor nested the second
+copy under the first, which was never its parent. If a child shares exactly the
+same uuids with two candidates, it was cut at or before the point where those
+two diverge from EACH OTHER — so it is a SIBLING of the younger one, and
+attaching it to their common ancestor is what draws it as one. Measured on four
+real sessions: 12 shared uuids with each of two candidates. Creation order has to
 come from the filesystem (`birthtime`), because copied records keep their
 original timestamps. Verified against the only ground truth available — the two
 `/branch` messages in this project's own history, which name the parent. Where
@@ -353,7 +385,19 @@ A `/command` is three user-role records, not one: the `<local-command-caveat>`
 (also `isMeta`), the `<command-name>`/`-message`/`-args` invocation, and the
 `<local-command-stdout>` capture.
 
+**`branch --to` cuts an ARM; `branch --at` cuts the FILE.** After a rewind,
+the lines just before a prompt can belong to the abandoned arm, so a file prefix
+ends on the wrong arm and a resume continues it. `planBranchTo` keeps the
+parentUuid chain, plus tool_results hanging off it (the forked parallel-call
+encoding puts one beside the chain) and sidecars that name no leaf. Verified by
+`claude -p -r` on a real cut: it carried exactly the prompts on the chosen arm.
+
 ## Open — do not assume these are settled
+
+**The TUI's `b` mixes two numberings.** It passes `node.promptNo` — counted
+depth-first down the tree — to `planBranch`, which indexes prompts in FILE
+order. They agree on a single unrewound transcript and can differ after a
+rewind. Moving `b` onto `planBranchTo` would fix it; not done yet.
 
 **Prompt numbering is unverified.** `#N` is chronological across the whole tree.
 Whether that matches what `Esc Esc` lists is unconfirmed, and the rewind recipe

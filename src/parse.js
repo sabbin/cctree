@@ -47,6 +47,11 @@ function plainText(content) {
     .join('\n');
 }
 
+/** What the person typed in a prompt record, slash-command plumbing removed. */
+export function promptText(raw) {
+  return stripPlumbing(plainText(raw?.message?.content));
+}
+
 export function stripPlumbing(text) {
   return String(text).replace(PLUMBING_STRIP, '').trim();
 }

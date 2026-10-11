@@ -1,26 +1,30 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { parseTranscript, stats, PLUMBING_TAGS, stripPlumbing } from './parse.js';
-import { planBranch, buildBranchText } from './branch.js';
+import { parseTranscript, stats, PLUMBING_TAGS, stripPlumbing, promptText } from './parse.js';
+import { planBranch, planBranchTo, buildBranchText } from './branch.js';
 import { readAliases, setAlias, STORE_FILE } from './store.js';
 import { buildGraph, annotate, collapse, looksForked, headOf } from './graph.js';
 import { assignLanes } from './lanes.js';
-import { renderAscii, renderHeader } from './render-ascii.js';
+import { renderAscii, renderAsciiRows, renderHeader } from './render-ascii.js';
 import { colorDepth, makePalette } from './palette.js';
 import { runTui } from './tui.js';
-import { projectDir, listSessions, listSubagents, resolveSession } from './sessions.js';
+import { projectDir, listSessions, listSubagents, resolveSession, byCreation } from './sessions.js';
+import { describeSessions, familyFiles, renderSessionRows } from './session-list.js';
 import { inheritedFor, forkStubs } from './fork-context.js';
 
 const USAGE = `cctree — a git-style graph over Claude Code transcripts
 
-  cctree show [session] [--all] [--raw] [--no-color] [--issues]
+  cctree show [session] [--family | --all] [--raw] [--no-color] [--issues] [--width N] [--json]
       Render the conversation tree. Default session is the most recently
-      touched one for the current directory. --all merges every session in
-      the project so /branch copies appear as one tree.
+      touched one for the current directory. --family adds the session's
+      /branch relatives, as the TUI's f does. --all merges every session in
+      the project so /branch copies appear as one tree. --json emits the rows
+      with the node each one carries, for callers that act on a selection.
 
-  cctree sessions
-      List transcripts for the current directory.
+  cctree sessions [--json]
+      List transcripts for the current directory. --json emits the TUI
+      picker's rows: conversations as a tree, branches under their parent.
 
   cctree stats [session]
       Record-kind histogram and parser issues. Run this first after a
@@ -42,11 +46,13 @@ const USAGE = `cctree — a git-style graph over Claude Code transcripts
       one. Stored in ~/.cctree/sessions.json, never in the transcript — Claude
       Code's own ai-title/custom-title are read but never written.
 
-  cctree branch [session] --at N [--dry-run]
+  cctree branch [session] (--at N | --to UUID | --before UUID) [--dry-run] [--json]
       Create a new session containing everything before prompt #N, so you can
       ask #N differently. Rewind semantics: #N and everything after it is left
       behind. Writes a NEW transcript and never modifies the original; prints
       the claude -r command to enter it.
+      --to UUID ends the new session ON that node, on whichever arm it sits;
+      --before UUID ends it on the node's parent, to ask that prompt again.
 
 Options:
   --cwd DIR     treat DIR as the project working directory
@@ -95,6 +101,30 @@ function loadFiles(files, { raw = false } = {}) {
 
 function cmdSessions(flags) {
   const cwd = flags.cwd || process.cwd();
+  // The picker as rows, for the Claude Code pane: the same forest the TUI
+  // opens on, each row tagged with the session it carries.
+  // Each row also says where it hangs and how much hangs under it, so a caller
+  // can fold a conversation's branches away: hiding a row's descendants leaves
+  // every other row's `├─`/`└─` exactly right, so nothing has to be re-drawn.
+  if (flags.json) {
+    const palette = makePalette(flags.color === false || flags.noColor ? 0 : colorDepth());
+    const sessions = describeProject(cwd);
+    const byId = new Map(sessions.map((s) => [s.id, s]));
+    const under = (s, seen = new Set()) => {
+      let n = 0;
+      for (const id of s.children ?? []) {
+        if (seen.has(id) || !byId.has(id)) continue; // a cycle cannot happen, but never hang
+        seen.add(id);
+        n += 1 + under(byId.get(id), seen);
+      }
+      return n;
+    };
+    const rows = renderSessionRows(sessions, { palette, width: Number(flags.width) || 100 }).map((r) => {
+      const s = r.id ? byId.get(r.id) : null;
+      return s ? { ...r, parent: s.parent?.id ?? null, descendants: under(s), alias: s.alias } : r;
+    });
+    return console.log(JSON.stringify({ rows }));
+  }
   const dir = projectDir(cwd);
   if (!dir) {
     console.error(`no transcripts found for ${cwd}`);
@@ -109,25 +139,47 @@ function cmdSessions(flags) {
   if (subs.length) console.log(`  (${subs.length} subagent sidechains)`);
 }
 
+/** Every session in the project, described the way the picker draws them. */
+function describeProject(cwd) {
+  const dir = projectDir(cwd);
+  const entries = (dir ? listSessions(dir) : []).map((s) => ({
+    id: s.id,
+    file: s.path,
+    records: parseTranscript(s.path).records,
+    // Only the filesystem knows which session was created first: a branch's
+    // records are verbatim copies and carry the original timestamps.
+    createdAt: s.birth,
+  }));
+  return describeSessions(entries, { now: Date.now(), aliases: readAliases() });
+}
+
 /** Which transcripts a command should read, and what to call them. */
 function resolveFiles(positional, flags) {
   const cwd = flags.cwd || process.cwd();
   if (flags.all) {
     const dir = projectDir(cwd);
     if (!dir) fail(`no transcripts found for ${cwd}`);
-    const files = listSessions(dir).map((s) => s.path).reverse();
+    const files = byCreation(listSessions(dir)).map((s) => s.path);
     return { files, title: `${dir} (${files.length} sessions)` };
   }
   const s = resolveSession(positional[0], cwd);
   if (!s) fail(`no transcript found for ${positional[0] || cwd}`);
+  // The conversation this transcript belongs to: its `/branch` ancestors and
+  // descendants, which is what the TUI's `f` opens. A branch copy holds its
+  // whole prefix, so on its own it draws a straight line through the split
+  // that made it — accurate, and exactly the thing you opened the tree to see.
+  if (flags.family) {
+    const family = familyFiles(describeProject(cwd), s.path);
+    if (family && family.length > 1) return { files: family, title: `${s.path} (${family.length} sessions)` };
+  }
   return { files: [s.path], title: s.path };
 }
 
 function cmdTui(positional, flags) {
   const cwd = flags.cwd || process.cwd();
   const dir = projectDir(cwd);
-  // Oldest first, so HEAD resolves to the newest session when they are merged.
-  const allFiles = dir ? listSessions(dir).map((s) => s.path).reverse() : [];
+  // Oldest-CREATED first, so the original keeps the trunk when they are merged.
+  const allFiles = dir ? byCreation(listSessions(dir)).map((s) => s.path) : [];
 
   // The picker is the default entry point: a merged tree is unreadable once a
   // project has a few branches. Naming a session, asking for --all, or aiming
@@ -203,9 +255,13 @@ function cmdShow(positional, flags) {
   const forced = flags.color === false || flags.noColor === true;
   const palette = makePalette(forced ? 0 : colorDepth());
 
+  if (flags.json) return console.log(JSON.stringify(showJson(graph, lanes, { palette, title, width: Number(flags.width) || 0 })));
+
   console.log(renderHeader(graph, lanes, { file: title }));
   console.log('');
-  console.log(renderAscii(graph, lanes, { palette }));
+  // `--width` is for callers that are not a terminal but know their width — the
+  // Claude Code panel, which renders this output into a pane of its own size.
+  console.log(renderAscii(graph, lanes, { palette, width: Number(flags.width) || 0 }));
 
   const forkWarn = flags.all ? looksForked(graph) : [];
   if (forkWarn.length > 1) {
@@ -217,6 +273,35 @@ function cmdShow(positional, flags) {
   } else if (issues.length) {
     console.log(`\n${issues.length} parse issues (--issues to list)`);
   }
+}
+
+/**
+ * The tree as rows a caller can act on: the same text the printed view draws,
+ * each node row tagged with what a branch from it needs. The Claude Code pane
+ * is the caller — it lets you pick a row, and a row is only worth picking if it
+ * says which transcript holds the node and where its collapsed run ends.
+ */
+function showJson(graph, lanes, { palette, title, width }) {
+  const [summary] = renderHeader(graph, lanes, { file: title }).split('\n');
+  const short = (f) => String(f).replace(/^.*[/\\]/, '').replace(/\.jsonl$/, '');
+  const rows = renderAsciiRows(graph, lanes, { palette, width }).map(({ text, uuid }) => {
+    const n = uuid ? graph.nodes.get(uuid) : null;
+    if (!n) return { text };
+    return {
+      text,
+      uuid,
+      // A collapsed run is drawn as its first record; the conversation stood at
+      // its LAST one, so that is where "continue from here" has to cut.
+      end: n.tailUuid ?? uuid,
+      kind: n.kind,
+      promptNo: n.promptNo ?? null,
+      preview: n.preview ?? '',
+      isHead: !!n.isHead,
+      inferred: !!n.record?.inferred,
+      sessions: [...n.files].map(short),
+    };
+  });
+  return { summary, rows };
 }
 
 function cmdStats(positional, flags) {
@@ -338,12 +423,34 @@ function cmdName(positional, flags) {
 function cmdBranch(positional, flags) {
   const s = resolveSession(positional[0], flags.cwd || process.cwd());
   if (!s) fail('no transcript found');
-  const at = Number(flags.at);
-  if (!Number.isInteger(at) || at < 1) fail('--at N is required (a prompt number from `cctree show`)');
-
   const { records } = parseTranscript(s.path);
-  const plan = planBranch(records, at);
-  if (!plan.ok) fail(plan.reason);
+
+  // Three ways to name the cut. `--at N` is the original and cuts the file at
+  // prompt #N. `--to`/`--before` name a node, which is what a caller holding a
+  // selection has — and the only form that is right on an arm other than the
+  // trunk, since `#N` counts down the tree while `--at` counts through the file.
+  let plan;
+  let what;
+  let reask = null;
+  if (flags.to || flags.before) {
+    let to = flags.to;
+    if (flags.before) {
+      const target = records.find((r) => r.uuid === flags.before);
+      if (!target) fail(`no record ${flags.before} in ${s.id}`);
+      if (!target.parentUuid) fail('that node opens the conversation — a branch before it would be empty');
+      to = target.parentUuid;
+      if (target.kind === 'prompt') reask = promptText(target.raw);
+    }
+    plan = planBranchTo(records, to);
+    if (!plan.ok) fail(plan.reason);
+    what = flags.before ? `before ${flags.before.slice(0, 8)}` : `at ${to.slice(0, 8)}`;
+  } else {
+    const at = Number(flags.at);
+    if (!Number.isInteger(at) || at < 1) fail('--at N, --to UUID or --before UUID is required');
+    plan = planBranch(records, at);
+    if (!plan.ok) fail(plan.reason);
+    what = `before #${at} "${String(plan.target.preview).replace(/\s+/g, ' ').slice(0, 56)}"`;
+  }
 
   const newId = randomUUID();
   const dest = join(dirname(s.path), `${newId}.jsonl`);
@@ -351,20 +458,27 @@ function cmdBranch(positional, flags) {
   if (existsSync(dest)) fail(`refusing to overwrite ${dest}`);
 
   const source = readFileSync(s.path, 'utf8');
-  const { text, kept, rewritten } = buildBranchText(source, { cutLine: plan.cutLine, newSessionId: newId });
+  const { text, kept, rewritten } = buildBranchText(source, {
+    cutLine: plan.cutLine,
+    keepLines: plan.keepLines,
+    newSessionId: newId,
+  });
   if (!text) fail('nothing to write — the branch would be empty');
 
-  const preview = String(plan.target.preview).replace(/\s+/g, ' ').slice(0, 56);
+  if (flags.json) {
+    if (!flags.dryRun) writeFileSync(dest, text);
+    return console.log(JSON.stringify({ id: newId, path: dest, kept, of: records.length, reask, dryRun: !!flags.dryRun }));
+  }
   if (flags.dryRun) {
-    console.log(`would branch before #${at} "${preview}"`);
-    console.log(`  keep ${kept} records (of ${records.length}), drop ${plan.droppedPrompts} prompt(s)`);
+    console.log(`would branch ${what}`);
+    console.log(`  keep ${kept} records (of ${records.length})`);
     console.log(`  new session ${newId}`);
     console.log(`  would write ${dest}`);
     return;
   }
 
   writeFileSync(dest, text);
-  console.log(`branched before #${at} "${preview}"`);
+  console.log(`branched ${what}`);
   console.log(`  kept ${kept} records, rewrote sessionId on ${rewritten}`);
   console.log(`  wrote ${dest}`);
   console.log(`\nEnter it with:\n  claude -r ${newId}`);

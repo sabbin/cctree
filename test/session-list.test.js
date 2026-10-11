@@ -659,3 +659,73 @@ test('a family includes an unused fork, which shares no uuids with anyone', () =
     '/p/fork.jsonl',
   ]);
 });
+
+
+test('two branches cut from one conversation are siblings, not a chain', () => {
+  // Measured: branching twice from the same conversation gives both copies the
+  // IDENTICAL prefix, so "most shared uuids" ties and the tie-break decides.
+  // Preferring the closer ancestor nested the second copy under the first,
+  // which was never its parent.
+  //
+  // The rule is the opposite of the obvious guess: when a child shares exactly
+  // the same uuids with two candidates, it was cut at or before the point where
+  // those two diverge from EACH OTHER — so it is a sibling of the younger one.
+  const shared = [
+    rec('u1', 'prompt', '2026-08-08T10:00:00.000Z', 'shared opening'),
+    rec('a1', 'assistant', '2026-08-08T10:01:00.000Z'),
+    rec('u2', 'prompt', '2026-08-08T10:02:00.000Z', 'shared second'),
+  ];
+  const rows = describeSessions(
+    [
+      {
+        id: 'original',
+        file: '/p/original.jsonl',
+        createdAt: 1000,
+        records: [...shared, rec('z1', 'prompt', '2026-08-08T13:00:00.000Z', 'the trunk carries on')],
+      },
+      {
+        id: 'first',
+        file: '/p/first.jsonl',
+        createdAt: 2000,
+        records: [...shared, rec('c1', 'prompt', '2026-08-08T11:00:00.000Z', 'first branch')],
+      },
+      {
+        // Cut from `original` at the same point, AFTER `first` already existed.
+        id: 'second',
+        file: '/p/second.jsonl',
+        createdAt: 3000,
+        records: [...shared, rec('e1', 'prompt', '2026-08-08T12:00:00.000Z', 'second branch')],
+      },
+    ],
+    { now: NOW },
+  );
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  assert.equal(byId.first.shares.find((sh) => sh.id === 'second').count, 3, 'the tie is real');
+  assert.equal(byId.second.shares.find((sh) => sh.id === 'original').count, 3, 'and it is a tie with both');
+
+  assert.equal(byId.first.parent.id, 'original');
+  assert.equal(byId.second.parent.id, 'original', 'a sibling of `first`, not its child');
+  assert.deepEqual(byId.first.children, [], 'nothing hangs off the first branch');
+  assert.deepEqual(byId.original.children.sort(), ['first', 'second']);
+});
+
+test('a clear winner still beats an older candidate', () => {
+  // The tie-break must not swallow the main rule: a grandchild shares its whole
+  // parent, which is strictly more than it shares with the root.
+  const base = [rec('u1', 'prompt', '2026-08-08T10:00:00.000Z', 'q1')];
+  const child = [...base, rec('c1', 'prompt', '2026-08-08T10:05:00.000Z', 'q2')];
+  const rows = describeSessions(
+    [
+      { id: 'root', file: '/p/root.jsonl', createdAt: 1000, records: base },
+      { id: 'child', file: '/p/child.jsonl', createdAt: 2000, records: child },
+      {
+        id: 'grandchild',
+        file: '/p/grandchild.jsonl',
+        createdAt: 3000,
+        records: [...child, rec('g1', 'prompt', '2026-08-08T10:09:00.000Z', 'q3')],
+      },
+    ],
+    { now: NOW },
+  );
+  assert.equal(rows.find((r) => r.id === 'grandchild').parent.id, 'child', 'more shared prefix wins outright');
+});

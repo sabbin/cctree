@@ -56,15 +56,65 @@ export function planBranch(records, atPromptNo) {
 }
 
 /**
+ * Work out a branch that ends exactly at one node: the conversation as it stood
+ * the moment `uuid` was written, on whichever arm it sits.
+ *
+ * `planBranch` cuts the FILE, which is right only on the trunk. After a rewind
+ * the lines just before a prompt can belong to the arm that was abandoned, so a
+ * prefix of the file ends on the wrong arm and a resume continues that one. The
+ * arm is the parentUuid chain, so this keeps the chain and nothing it did not
+ * lead to — plus two things the chain alone would lose:
+ *
+ *   - tool_results hanging off a kept tool_use. The forked encoding of parallel
+ *     calls (see linearizeTurns) puts the result of the first call BESIDE the
+ *     chain, not on it; dropping it leaves a tool_use with no result, which the
+ *     API refuses.
+ *   - sidecars before the cut, except those naming a leaf (`last-prompt`,
+ *     `summary`): those point at wherever the original ended, not here.
+ *
+ * Ancestry follows `logicalParentUuid` across a compaction boundary as well,
+ * which the boundary record carries in place of a parent.
+ *
+ * @param {object[]} records normalized, from one transcript, in file order
+ * @param {string} uuid the node the branch ends on, inclusive
+ */
+export function planBranchTo(records, uuid) {
+  const byUuid = new Map();
+  for (const r of records) if (r.uuid && !byUuid.has(r.uuid)) byUuid.set(r.uuid, r);
+  const target = byUuid.get(uuid);
+  if (!target) return { ok: false, reason: `no record ${uuid} in this transcript` };
+
+  const chain = new Set();
+  for (let cur = target; cur && !chain.has(cur.uuid); ) {
+    chain.add(cur.uuid);
+    const up = cur.parentUuid ?? (typeof cur.raw?.logicalParentUuid === 'string' ? cur.raw.logicalParentUuid : null);
+    cur = up ? byUuid.get(up) : null;
+  }
+
+  const keepLines = new Set();
+  for (const r of records) {
+    if (r.line > target.line) continue;
+    const keep = r.uuid
+      ? chain.has(r.uuid) || (r.toolResultFor?.length > 0 && chain.has(r.parentUuid))
+      : !r.leafUuid && r.kind !== 'summary';
+    if (keep) keepLines.add(r.line);
+  }
+  return { ok: true, target, keepLines, chainLength: chain.size };
+}
+
+/**
  * Produce the branch file's contents.
  * @returns {{text: string, kept: number, rewritten: number}}
  */
-export function buildBranchText(sourceText, { cutLine, newSessionId }) {
+export function buildBranchText(sourceText, { cutLine = Infinity, keepLines = null, newSessionId }) {
   const out = [];
   let rewritten = 0;
 
   const lines = sourceText.split('\n');
   for (let i = 0; i < lines.length && i < cutLine - 1; i++) {
+    // `keepLines` (1-based, from planBranchTo) selects an arm; without it the
+    // whole prefix is kept, which is what `/branch` itself does.
+    if (keepLines && !keepLines.has(i + 1)) continue;
     const line = lines[i];
     if (!line.trim()) continue;
     let raw;
