@@ -6,10 +6,62 @@ the wrong idea is the part worth not repeating.
 
 ## [Unreleased]
 
-The TUI redesign (`CCTREE-REDESIGN.md`), plus a run of layout corrections that
-came out of testing it against real `/branch` and `/fork` conversations.
+## [0.1.0-pre-alpha] - 2026-10-11
+
+The first release. Two bodies of work: the in-app pane, which puts the tree
+inside Claude Code beside the conversation it draws, and the TUI redesign
+(`CCTREE-REDESIGN.md`) with the run of layout corrections that came out of
+testing it against real `/branch` and `/fork` conversations.
+
+Install: `/plugin install cctree --marketplace sabbin/cctree`.
 
 ### Added
+
+#### The in-app pane (`hooks/panel.tsx`)
+
+- **ccTree is now a Claude Code mod as well as a plugin.** A function hooks
+  module, loaded from the same `hooks/hooks.json`, docks the tree to the right
+  of the session; `/cctree` opens it, and from 144 columns it opens by itself.
+  Installing the plugin brings it — there is nothing separate to install.
+- **It runs the CLI rather than reimplementing it.** A pane's code runs with no
+  Node and no filesystem, so it asks `cctree show --json` for rows, with
+  `FORCE_COLOR=3`, and turns the escapes back into coloured spans. One renderer:
+  the pane, the printed view and the TUI cannot drift apart.
+- **It opens on the conversation's family, not its one transcript.** A
+  `/branch` copy holds its whole prefix, so on its own it draws a straight line
+  through the split that made it — the first thing a tester reported. `f`
+  narrows to the one transcript; `s` flips to the session list, as in the TUI.
+- **Jumping is branching.** No plugin API can drive the rewind menu, so `c`
+  (continue from here) and `e` (ask this again) write a new session ending at
+  the picked node and `/resume` into it; the original is never touched. `e`
+  puts the prompt back in the input box once the resume lands, which needs
+  `classic.SessionStart` — `session.start` does not fire for a `/resume`.
+- **The session list folds and renames.** `−`/`+N` folds a conversation's
+  branches away, at any depth, and the folds are kept across sessions; `n`
+  renames through `cctree name`, an empty name clearing it.
+- **Header and footer stay put.** The engine scrolls a pane's body as one
+  block, so a footer would scroll off with the tree. The pane draws exactly its
+  own height instead and scrolls a window over the tree itself — following the
+  end, where HEAD is, until you move it.
+- **Keys name what they switch to.** The header draws each choice as tabs: the
+  one in force as a label, the other as its key. `f: family` beside a tree that
+  was already the family read as the state, not the action.
+
+#### CLI
+
+- `show --json` (rows tagged with the node each one carries), `show --family`
+  (the TUI's `f`), `show --width N`, and `sessions --json` (the picker's forest,
+  each row with its parent, how many sessions hang under it, and its alias).
+- `branch --to <uuid>` / `--before <uuid>` cut along the node's **arm**, not the
+  file. After a rewind the lines just above a prompt can belong to the arm you
+  abandoned, so a file prefix ends on the wrong arm and a resume continues it.
+  `planBranchTo` keeps the parentUuid chain, the tool_results hanging off it
+  (the forked parallel-call encoding puts one beside the chain), and sidecars
+  that name no leaf. Verified with `claude -p -r` on a real cut: the resumed
+  session carried exactly the prompts on the chosen arm.
+- `.claude-plugin/marketplace.json`, which makes the repository installable
+  with one line.
+
 
 #### Colour depth (`src/palette.js`)
 
@@ -173,6 +225,15 @@ swallowed one hid the branch point inside an opaque `assistant · N msgs`.
 
 ### Fixed
 
+- **The original stopped being the trunk once you went back to it.** `show
+  --all` and the TUI's `a` ordered sessions by modification time, so one prompt
+  typed into the original after branching it made it the newest file; the copy
+  took the trunk and the original was drawn as an arm of its own branch. Both
+  now order by creation time (`byCreation`). Pinned by `test/family.test.js`.
+- **A switch swallowed the session named after it.** Every flag took the next
+  word as its value, so `cctree show --no-color <session>` read the session as
+  the switch's value and showed the newest transcript instead. Only the flags
+  that take a value consume one now.
 - Picker rows wrapped at 80 columns: the name and the trailing prompt were
   budgeted independently (`width - 18` plus `width / 2` again on top).
 - The name column now reserves room for a badge it may not truncate, and lets
@@ -198,6 +259,13 @@ swallowed one hid the branch point inside an opaque `assistant · N msgs`.
 
 ### Notes for the next person
 
+- The TUI's `b` still branches with `--at` semantics, passing `node.promptNo` —
+  counted down the tree — to `planBranch`, which counts prompts through the
+  FILE. They agree on a transcript with no rewind and can differ after one.
+  Moving `b` onto `planBranchTo` fixes it.
+- The pane's mouse-wheel scrolling depends on Claude Code still sending wheel
+  events when the body exactly fits the pane; it has no automated test.
+
 - The leftward-elbow case is now **unreachable from a real transcript**: every
   column to an arm's left is held for a trunk child not yet emitted, so
   `freeLane` can only return a column to the right. The logic stays because the
@@ -210,3 +278,6 @@ swallowed one hid the branch point inside an opaque `assistant · N msgs`.
   byte-identical to before the split view; every renderer's depth-0 output is
   byte-identical to its `color: false` output; and all four colour tiers produce
   identical column arithmetic once escapes are stripped.
+
+[Unreleased]: https://github.com/sabbin/cctree/compare/v0.1.0-pre-alpha...HEAD
+[0.1.0-pre-alpha]: https://github.com/sabbin/cctree/releases/tag/v0.1.0-pre-alpha
