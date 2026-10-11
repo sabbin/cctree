@@ -52,6 +52,29 @@ export function projectDir(cwd = process.cwd()) {
   return null;
 }
 
+/**
+ * When a transcript was first written. Not every filesystem records a birth
+ * time; 0 means "unknown", and callers then decline to claim a direction
+ * rather than inventing one.
+ */
+export function birthOf(file) {
+  try {
+    const st = statSync(file);
+    return st.birthtimeMs > 0 ? st.birthtimeMs : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Oldest-CREATED first: the order the trunk rule needs (see `trunkRank` in
+ * graph.js). Not mtime — writing into the original after branching it makes
+ * the original the most recently modified, and sorting on that hands the trunk
+ * to the copy. Falls back to mtime only where birth times are unknown.
+ */
+export const byCreation = (sessions) =>
+  [...sessions].sort((a, b) => (a.birth && b.birth && a.birth !== b.birth ? a.birth - b.birth : a.mtime - b.mtime));
+
 /** Sessions in a project dir, newest first. Includes subagent sidechains separately. */
 export function listSessions(dir) {
   if (!dir || !existsSync(dir)) return [];
@@ -60,7 +83,7 @@ export function listSessions(dir) {
     .map((f) => {
       const path = join(dir, f);
       const st = statSync(path);
-      return { id: basename(f, '.jsonl'), path, mtime: st.mtimeMs, size: st.size };
+      return { id: basename(f, '.jsonl'), path, mtime: st.mtimeMs, birth: st.birthtimeMs > 0 ? st.birthtimeMs : 0, size: st.size };
     })
     .sort((a, b) => b.mtime - a.mtime);
 }

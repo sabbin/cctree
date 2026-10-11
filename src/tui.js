@@ -19,6 +19,7 @@ import { assignLanes } from './lanes.js';
 import { planBranch, buildBranchText } from './branch.js';
 import { describeSessions, renderSessionRows, familyFiles } from './session-list.js';
 import { readAliases, setAlias } from './store.js';
+import { birthOf } from './sessions.js';
 import { colorDepth, makePalette, PLAIN, vlen, vtrunc, wrap } from './palette.js';
 
 const ALT_ON = '\x1b[?1049h';
@@ -256,20 +257,6 @@ export function resolveOpenTarget({ lastBranchId = null, node = null } = {}) {
   const id = node?.record?.sessionId ?? null;
   if (id) return { id, reason: 'the session this node belongs to' };
   return { id: null, reason: 'nothing to open — select a node, or branch first with b' };
-}
-
-/**
- * When a transcript was first written. Not every filesystem records a birth
- * time; 0 means "unknown", and the picker then declines to claim a direction
- * rather than inventing one.
- */
-function birthOf(file) {
-  try {
-    const st = statSync(file);
-    return st.birthtimeMs > 0 ? st.birthtimeMs : 0;
-  } catch {
-    return 0;
-  }
 }
 
 /** Width of the pane's label gutter. Labels right of it, values left-aligned. */
