@@ -61,7 +61,23 @@ rewritten, which is precisely what `/branch` does. Claude Code resumes the resul
 with `claude -r <id>`. Run `--dry-run` first — it reports what would be kept and
 dropped without touching the disk.
 
-## Load it as a plugin
+## Install
+
+At the Claude Code prompt:
+
+```
+/plugin install cctree --marketplace sabbin/cctree
+```
+
+Answer `y` to add the marketplace, then pick a scope. That brings the whole
+plugin: the pane (`/cctree`, docked beside the session from 144 columns), the
+`show` skill, and the `cctree` CLI on the Bash tool's PATH. The pane runs the
+CLI with `node`, so Node 18+ has to be on PATH. Pre-alpha: expect it to change.
+
+Updates arrive as a new `version` in `.claude-plugin/plugin.json`; pick one up
+with `claude plugin update cctree`.
+
+## Load it as a plugin (development)
 
 ```bash
 claude plugin validate .

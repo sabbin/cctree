@@ -3,6 +3,9 @@
   "displayName": "ccTree",
   "version": "0.1.0-pre-alpha",
   "description": "Git-style graph view of the current conversation tree, including branches the TUI has stopped showing you.",
+  "author": {
+    "name": "Sabin Pandelovitch"
+  },
   "keywords": [
     "transcript",
     "graph",
